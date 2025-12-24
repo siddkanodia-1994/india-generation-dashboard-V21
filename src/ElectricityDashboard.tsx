@@ -14,8 +14,8 @@ import {
 
 /**
  * Shared electricity dashboard component (Generation / Demand / Supply)
- * - Loads /public/data/<type>.csv on every mount (cache-busted)
- * - Allows local edits (per tab) via localStorage, but CSV is the baseline on refresh
+ * - Uses /public/data/<type>.csv as baseline (cache-busted)
+ * - Optional localStorage edits per tab (keyed by type)
  * - Same UI: entry, import/export, stats, daily & monthly charts, tables
  */
 
@@ -34,7 +34,7 @@ function parseISOKey(s: string) {
   return Number.isNaN(d.getTime()) ? null : s;
 }
 
-// Parse DD-MM-YYYY (preferred) -> ISO, also accept ISO for backward compatibility
+// Parse DD-MM-YYYY (preferred) -> ISO, accept ISO
 function parseInputDate(s: unknown) {
   if (typeof s !== "string") return null;
   const t = s.trim();
@@ -56,25 +56,55 @@ function parseInputDate(s: unknown) {
   return null;
 }
 
-function formatDDMMYYYY(iso: string) {
-  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "—";
-  const [y, m, d] = iso.split("-");
-  return `${d}-${m}-${y}`;
-}
+// Parse DD/MM/YY or DD/MM/YYYY -> ISO (YYYY-MM-DD)
+function parseSlashDateToISO(s: string) {
+  const t = (s || "").trim();
+  if (!t) return null;
 
-// New: DD/MM/YY (for From/To labels and weekly table labels)
-function formatDDMMYYSlash(iso: string) {
-  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "—";
-  const [y, m, d] = iso.split("-");
-  const yy = y.slice(2);
-  return `${d}/${m}/${yy}`;
-}
+  // DD/MM/YY
+  if (/^\d{2}\/\d{2}\/\d{2}$/.test(t)) {
+    const [ddS, mmS, yyS] = t.split("/");
+    const dd = Number(ddS);
+    const mm = Number(mmS);
+    const yy = Number(yyS);
+    // interpret 00-69 => 2000-2069, 70-99 => 1970-1999 (common)
+    const yyyy = yy <= 69 ? 2000 + yy : 1900 + yy;
 
-// New: DD/MM/YYYY (for weekly “Week starting …” text)
-function formatDDMMYYYYSlash(iso: string) {
-  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "—";
-  const [y, m, d] = iso.split("-");
-  return `${d}/${m}/${y}`;
+    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
+    if (Number.isNaN(d.getTime())) return null;
+    if (
+      d.getUTCFullYear() !== yyyy ||
+      d.getUTCMonth() !== mm - 1 ||
+      d.getUTCDate() !== dd
+    )
+      return null;
+
+    return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+
+  // DD/MM/YYYY
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(t)) {
+    const [ddS, mmS, yyyyS] = t.split("/");
+    const dd = Number(ddS);
+    const mm = Number(mmS);
+    const yyyy = Number(yyyyS);
+
+    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
+    if (Number.isNaN(d.getTime())) return null;
+    if (
+      d.getUTCFullYear() !== yyyy ||
+      d.getUTCMonth() !== mm - 1 ||
+      d.getUTCDate() !== dd
+    )
+      return null;
+
+    return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+
+  // allow ISO input too
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return parseISOKey(t);
+
+  return null;
 }
 
 function isoMinusDays(iso: string, days: number) {
@@ -89,24 +119,6 @@ function isoPlusDays(iso: string, days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-function isoAddYears(iso: string, deltaYears: number) {
-  const y = Number(iso.slice(0, 4));
-  const m = Number(iso.slice(5, 7));
-  const d = Number(iso.slice(8, 10));
-
-  const tryDt = new Date(Date.UTC(y + deltaYears, m - 1, d));
-  if (
-    tryDt.getUTCFullYear() === y + deltaYears &&
-    tryDt.getUTCMonth() === m - 1 &&
-    tryDt.getUTCDate() === d
-  ) {
-    return tryDt.toISOString().slice(0, 10);
-  }
-
-  const lastDay = new Date(Date.UTC(y + deltaYears, m, 0));
-  return lastDay.toISOString().slice(0, 10);
-}
-
 // Week starts on Monday
 function startOfWeekISO(iso: string) {
   const d = new Date(iso + "T00:00:00Z");
@@ -114,6 +126,20 @@ function startOfWeekISO(iso: string) {
   const diffToMon = dow === 0 ? -6 : 1 - dow;
   d.setUTCDate(d.getUTCDate() + diffToMon);
   return d.toISOString().slice(0, 10);
+}
+
+// Display helpers
+function formatDDMMYYYYSlash(iso: string) {
+  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+// Required by you: show full date consistently as DD/MM/YY for From/To
+function formatDDMMYY(iso: string) {
+  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y.slice(2, 4)}`;
 }
 
 // ----------------------
@@ -128,67 +154,16 @@ function fmtNum(x: number | null | undefined, digits = 2) {
   }).format(x);
 }
 
-function fmtNum0(x: number | null | undefined) {
-  return fmtNum(x, 0);
-}
-
 function fmtPct(x: number | null | undefined, digits = 2) {
   if (x == null || Number.isNaN(x)) return "—";
   const sign = x > 0 ? "+" : "";
   return `${sign}${fmtNum(x, digits)}%`;
 }
 
-function fmtPct0(x: number | null | undefined) {
-  return fmtPct(x, 0);
-}
-
 function asFiniteNumber(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
-}
-
-// ----------------------
-// Domains (for auto-scaling axes)
-// ----------------------
-
-function computeDomain(values: Array<number | null | undefined>, padPct = 0.05, minAbsPad = 1) {
-  const nums = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-  if (!nums.length) return undefined;
-
-  let min = Math.min(...nums);
-  let max = Math.max(...nums);
-
-  if (min === max) {
-    const pad = Math.max(minAbsPad, Math.abs(min) * padPct);
-    return [min - pad, max + pad] as [number, number];
-  }
-
-  const range = max - min;
-  const pad = Math.max(minAbsPad, range * padPct);
-  return [min - pad, max + pad] as [number, number];
-}
-
-// ----------------------
-// Aggregation + growth
-// ----------------------
-
-function monthKey(isoDate: string) {
-  return isoDate.slice(0, 7); // YYYY-MM
-}
-
-function addMonths(ym: string, delta: number) {
-  const [y, m] = ym.split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
-function getYear(ym: string) {
-  return Number(ym.slice(0, 4));
-}
-
-function getMonth(ym: string) {
-  return Number(ym.slice(5, 7));
 }
 
 function safeDiv(n: number, d: number | null | undefined) {
@@ -227,7 +202,50 @@ function downloadCSV(filename: string, text: string) {
 }
 
 // ----------------------
-// Data types
+// Domain helper (for autoscaling Y axes with padding)
+// ----------------------
+
+function computeDomain(values: Array<number | null | undefined>, padPct = 0.05, minAbsPad = 1) {
+  const nums = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (!nums.length) return undefined;
+
+  let min = Math.min(...nums);
+  let max = Math.max(...nums);
+
+  if (min === max) {
+    const pad = Math.max(minAbsPad, Math.abs(min) * padPct);
+    return [min - pad, max + pad] as [number, number];
+  }
+
+  const range = max - min;
+  const pad = Math.max(minAbsPad, range * padPct);
+  return [min - pad, max + pad] as [number, number];
+}
+
+// ----------------------
+// Aggregation helpers
+// ----------------------
+
+function monthKey(isoDate: string) {
+  return isoDate.slice(0, 7); // YYYY-MM
+}
+
+function addMonths(ym: string, delta: number) {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function getYear(ym: string) {
+  return Number(ym.slice(0, 4));
+}
+
+function getMonth(ym: string) {
+  return Number(ym.slice(5, 7));
+}
+
+// ----------------------
+// Types
 // ----------------------
 
 type DailyPoint = { date: string; value: number };
@@ -266,6 +284,24 @@ function computeKPIs(sortedDaily: DailyPoint[]) {
 
   const dailyLookup = new Map(sortedDaily.map((d) => [d.date, d.value] as const));
   const latest = sortedDaily[sortedDaily.length - 1];
+
+  const isoAddYears = (iso: string, deltaYears: number) => {
+    const y = Number(iso.slice(0, 4));
+    const m = Number(iso.slice(5, 7));
+    const d = Number(iso.slice(8, 10));
+
+    const tryDt = new Date(Date.UTC(y + deltaYears, m - 1, d));
+    if (
+      tryDt.getUTCFullYear() === y + deltaYears &&
+      tryDt.getUTCMonth() === m - 1 &&
+      tryDt.getUTCDate() === d
+    ) {
+      return tryDt.toISOString().slice(0, 10);
+    }
+
+    const lastDay = new Date(Date.UTC(y + deltaYears, m, 0));
+    return lastDay.toISOString().slice(0, 10);
+  };
 
   const sumAndCountInclusive = (startIso: string, endIso: string) => {
     if (startIso > endIso) return { sum: null as number | null, count: 0 };
@@ -413,42 +449,28 @@ function toMonthly(sortedDaily: DailyPoint[]) {
   return out;
 }
 
-// ----------------------
-// Weekly + FY aggregates for periodicity dropdown
-// ----------------------
-
-type WeeklyRow = {
-  week_start_iso: string;
-  total_units: number;
-  wow_pct: number | null;
-  yoy_pct: number | null;
-};
-
-type FYRow = {
-  fy_label: string; // e.g., FY25
-  fy_start_iso: string; // YYYY-04-01
-  fy_end_iso: string; // max available date in FY (for partial FY)
-  total_units: number;
-  yoy_pct: number | null;
-};
-
-function buildWeeklyRows(sortedDaily: DailyPoint[]) {
+// Weekly table computation (comparable periods)
+function toWeekly(sortedDaily: DailyPoint[]) {
   if (!sortedDaily.length) return [];
 
   const dailyLookup = new Map(sortedDaily.map((d) => [d.date, d.value] as const));
-  const weekTotals = new Map<string, number>();
-  const weekOffsets = new Map<string, Set<number>>();
+
+  // weekStart -> total + offsets present (0..6)
+  const weekMap = new Map<string, { total: number; offsets: Set<number> }>();
 
   for (const d of sortedDaily) {
     const wk = startOfWeekISO(d.date);
-    weekTotals.set(wk, (weekTotals.get(wk) || 0) + d.value);
-
     const off = Math.floor(
-      (new Date(d.date + "T00:00:00Z").getTime() - new Date(wk + "T00:00:00Z").getTime()) / 86400000
+      (new Date(d.date + "T00:00:00Z").getTime() - new Date(wk + "T00:00:00Z").getTime()) /
+        86400000
     );
-    if (!weekOffsets.has(wk)) weekOffsets.set(wk, new Set());
-    weekOffsets.get(wk)!.add(off);
+    if (!weekMap.has(wk)) weekMap.set(wk, { total: 0, offsets: new Set() });
+    const rec = weekMap.get(wk)!;
+    rec.total += d.value;
+    rec.offsets.add(off);
   }
+
+  const weeks = Array.from(weekMap.keys()).sort(sortISO);
 
   const sumWeekByOffsets = (weekStartIso: string, offsetsSet: Set<number>) => {
     let s = 0;
@@ -464,88 +486,51 @@ function buildWeeklyRows(sortedDaily: DailyPoint[]) {
     return hasAny ? s : null;
   };
 
-  const weeks = Array.from(weekTotals.keys()).sort(sortISO);
-
-  const rows: WeeklyRow[] = weeks.map((wk) => {
-    const curr = weekTotals.get(wk)!;
-    const offs = weekOffsets.get(wk) || new Set<number>();
+  return weeks.map((wk) => {
+    const rec = weekMap.get(wk)!;
+    const curr = rec.total;
+    const offs = rec.offsets;
 
     const prevWk = isoMinusDays(wk, 7);
-    const prevWoW = sumWeekByOffsets(prevWk, offs);
+    const prevComparable = sumWeekByOffsets(prevWk, offs);
 
-    const prevYearWk = isoMinusDays(wk, 364); // 52 weeks
-    const prevYoY = sumWeekByOffsets(prevYearWk, offs);
+    const prevYearWk = isoMinusDays(wk, 364);
+    const prevYearComparable = sumWeekByOffsets(prevYearWk, offs);
 
     return {
-      week_start_iso: wk,
+      week_start: wk,
       total_units: curr,
-      wow_pct: prevWoW != null ? growthPct(curr, prevWoW) : null,
-      yoy_pct: prevYoY != null ? growthPct(curr, prevYoY) : null,
+      wow_pct: prevComparable != null ? growthPct(curr, prevComparable) : null,
+      yoy_pct: prevYearComparable != null ? growthPct(curr, prevYearComparable) : null,
     };
   });
-
-  return rows;
 }
 
-function buildFYRows(sortedDaily: DailyPoint[]) {
-  if (!sortedDaily.length) return [];
-
-  const dailyLookup = new Map(sortedDaily.map((d) => [d.date, d.value] as const));
-
-  // Determine FY bucket for each date:
-  // FY end year: if month >= 4 => endYear = year+1 else endYear = year
-  const fyMap = new Map<string, { fyStartYear: number; maxIso: string; total: number }>();
-
+// FY (Apr-Mar) aggregation
+function toFinancialYears(sortedDaily: DailyPoint[]) {
+  const fyMap = new Map<number, number>(); // FY end year (e.g., 2025 => FY25)
   for (const d of sortedDaily) {
     const y = Number(d.date.slice(0, 4));
     const m = Number(d.date.slice(5, 7));
-    const fyStartYear = m >= 4 ? y : y - 1;
-    const fyEndYear = fyStartYear + 1;
-    const fyLabel = `FY${String(fyEndYear).slice(2)}`;
-
-    const rec = fyMap.get(fyLabel);
-    if (!rec) {
-      fyMap.set(fyLabel, { fyStartYear, maxIso: d.date, total: d.value });
-    } else {
-      rec.total += d.value;
-      if (d.date > rec.maxIso) rec.maxIso = d.date;
-    }
+    const fyEndYear = m >= 4 ? y + 1 : y; // Apr-Dec => next year; Jan-Mar => same year
+    fyMap.set(fyEndYear, (fyMap.get(fyEndYear) || 0) + d.value);
   }
 
-  const sumRangeInclusive = (startIso: string, endIso: string) => {
-    if (startIso > endIso) return null;
-    let s = 0;
-    let hasAny = false;
-    let cur = startIso;
-    while (cur <= endIso) {
-      const v = dailyLookup.get(cur);
-      if (v != null) {
-        s += v;
-        hasAny = true;
-      }
-      cur = isoPlusDays(cur, 1);
-    }
-    return hasAny ? s : null;
-  };
+  const fys = Array.from(fyMap.keys()).sort((a, b) => a - b);
+  const out = fys.map((fyEnd) => ({
+    fy_end: fyEnd,
+    label: `FY${String(fyEnd).slice(2, 4)}`,
+    total_units: fyMap.get(fyEnd)!,
+    yoy_pct: null as number | null,
+  }));
 
-  const rows: FYRow[] = Array.from(fyMap.entries())
-    .map(([fy_label, rec]) => {
-      const fy_start_iso = `${rec.fyStartYear}-04-01`;
-      const fy_end_iso = rec.maxIso;
-      const total_units = rec.total;
+  for (let i = 0; i < out.length; i++) {
+    const curr = out[i];
+    const prev = out.find((x) => x.fy_end === curr.fy_end - 1);
+    curr.yoy_pct = prev ? growthPct(curr.total_units, prev.total_units) : null;
+  }
 
-      // comparable YoY: previous FY from its Apr-01 to same day-of-year window
-      const prev_fy_start_iso = `${rec.fyStartYear - 1}-04-01`;
-      const prev_fy_end_iso = isoAddYears(fy_end_iso, -1);
-
-      const prevTotal = sumRangeInclusive(prev_fy_start_iso, prev_fy_end_iso);
-      const yoy_pct = prevTotal != null ? growthPct(total_units, prevTotal) : null;
-
-      return { fy_label, fy_start_iso, fy_end_iso, total_units, yoy_pct };
-    })
-    .sort((a, b) => a.fy_start_iso < b.fy_start_iso ? -1 : a.fy_start_iso > b.fy_start_iso ? 1 : 0);
-
-  return rows;
+  return out;
 }
 
 // ----------------------
@@ -737,19 +722,23 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
   const [rangeDays, setRangeDays] = useState(120);
   const [fetchStatus, setFetchStatus] = useState<string | null>(null);
 
-  // Slicer controls for the top chart
+  // Slicer controls for top chart
   const [fromIso, setFromIso] = useState("");
   const [toIso, setToIso] = useState("");
   const [aggFreq, setAggFreq] = useState<"daily" | "weekly" | "monthly" | "rolling30">("daily");
 
+  // From/To text fields (DD/MM/YY) to avoid native date input truncation
+  const [fromText, setFromText] = useState("");
+  const [toText, setToText] = useState("");
+
   // Series toggles
-  const [showUnitsSeries, setShowUnitsSeries] = useState(true); // Total Current
-  const [showPrevYearSeries, setShowPrevYearSeries] = useState(true); // Total (previous year)
-  const [showYoYSeries, setShowYoYSeries] = useState(true); // YoY %
-  const [showMoMSeries, setShowMoMSeries] = useState(true); // MoM % / WoW %
+  const [showUnitsSeries, setShowUnitsSeries] = useState(true);
+  const [showPrevYearSeries, setShowPrevYearSeries] = useState(true);
+  const [showYoYSeries, setShowYoYSeries] = useState(true);
+  const [showMoMSeries, setShowMoMSeries] = useState(true);
   const [showControlLines, setShowControlLines] = useState(false);
 
-  // Monthly table periodicity
+  // Monthly table periodicity dropdown
   const [tablePeriod, setTablePeriod] = useState<"monthly" | "weekly" | "yearly">("monthly");
 
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -816,15 +805,25 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
       .sort((a, b) => sortISO(a.date, b.date));
   }, [dataMap]);
 
-  // Initialize slicer to sensible default after data loads
+  // Initialize slicer to sensible default
   useEffect(() => {
     if (!sortedDaily.length) return;
     const lastIso = sortedDaily[sortedDaily.length - 1].date;
+
     if (!toIso) setToIso(lastIso);
     if (!fromIso) setFromIso(isoMinusDays(lastIso, clamp(rangeDays, 7, 3650)));
   }, [sortedDaily, toIso, fromIso, rangeDays]);
 
-  // Build top chart data for selected range/frequency
+  // Sync From/To text fields to ISO (DD/MM/YY)
+  useEffect(() => {
+    if (fromIso) setFromText(formatDDMMYY(fromIso));
+  }, [fromIso]);
+
+  useEffect(() => {
+    if (toIso) setToText(formatDDMMYY(toIso));
+  }, [toIso]);
+
+  // Build daily/weekly/monthly chart points
   const dailyForChart = useMemo<DailyChartPoint[]>(() => {
     if (!sortedDaily.length) return [];
 
@@ -856,6 +855,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
     if (aggFreq === "daily") {
       const sameDayPrevYear = (iso: string) => `${Number(iso.slice(0, 4)) - 1}${iso.slice(4)}`;
+
       const sameDayPrevMonth = (iso: string) => {
         const y = Number(iso.slice(0, 4));
         const m = Number(iso.slice(5, 7));
@@ -872,7 +872,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
         const pm = pmDate ? dailyLookup.get(pmDate) ?? null : null;
 
         return {
-          label: formatDDMMYYYYSlash(d.date), // better readability in tooltip labels
+          label: formatDDMMYYYYSlash(d.date), // full display for tooltips/X if needed
           units: d.value,
           prev_year_units: py,
           yoy_pct: py != null ? growthPct(d.value, py) : null,
@@ -1101,16 +1101,14 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
     }));
   }, [dailyForChart, showControlLines, controlStatsLeft, controlStatsYoY]);
 
-  const anyTotalsShown =
-    showUnitsSeries || showPrevYearSeries || (showControlLines && !!controlStatsLeft);
-  const anyPctShown =
-    showYoYSeries || showMoMSeries || (showControlLines && !!controlStatsYoY);
+  const anyTotalsShown = showUnitsSeries || showPrevYearSeries || (showControlLines && !!controlStatsLeft);
+  const anyPctShown = showYoYSeries || showMoMSeries || (showControlLines && !!controlStatsYoY);
 
-  // Dynamic axis domains to avoid poor scaling + avoid clipping
+  // ✅ Dynamic domains to stop poor scaling AND prevent clipping
   const leftAxisDomain = useMemo(() => {
     if (!dailyForChartWithControl?.length) return undefined;
-    const vals: Array<number | null> = [];
 
+    const vals: Array<number | null> = [];
     if (showUnitsSeries) vals.push(...dailyForChartWithControl.map((d: any) => d.units));
     if (showPrevYearSeries) vals.push(...dailyForChartWithControl.map((d: any) => d.prev_year_units));
 
@@ -1127,8 +1125,8 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
   const rightAxisDomain = useMemo(() => {
     if (!dailyForChartWithControl?.length) return undefined;
-    const vals: Array<number | null> = [];
 
+    const vals: Array<number | null> = [];
     if (showYoYSeries) vals.push(...dailyForChartWithControl.map((d: any) => d.yoy_pct));
     if (showMoMSeries) vals.push(...dailyForChartWithControl.map((d: any) => d.mom_pct));
 
@@ -1152,16 +1150,19 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
       total_units: m.total_gwh,
       yoy_pct: m.yoy_pct,
       mom_pct: m.mom_pct,
+      max_day: m.max_day,
     }));
   }, [monthly]);
 
-  const weeklyRows = useMemo(() => {
-    const rows = buildWeeklyRows(sortedDaily);
-    // show last ~104 weeks
-    return rows.slice(Math.max(0, rows.length - 104));
+  // Weekly table last 104 weeks
+  const weeklyForTable = useMemo(() => {
+    const w = toWeekly(sortedDaily);
+    const sliced = w.slice(Math.max(0, w.length - 104));
+    return sliced;
   }, [sortedDaily]);
 
-  const fyRows = useMemo(() => buildFYRows(sortedDaily), [sortedDaily]);
+  // FY table
+  const fyForTable = useMemo(() => toFinancialYears(sortedDaily), [sortedDaily]);
 
   const kpis = useMemo(() => computeKPIs(sortedDaily), [sortedDaily]);
 
@@ -1187,7 +1188,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
       return next;
     });
 
-    setMsg(`Saved ${formatDDMMYYYY(iso)}: ${fmtNum0(v)} units`);
+    setMsg(`Saved ${formatDDMMYYYYSlash(iso)}: ${fmtNum(v)} units`);
     setValueText("");
   }
 
@@ -1232,7 +1233,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
   function exportCSV() {
     const header = `date,${valueColumnKey}`;
-    const lines = sortedDaily.map((d) => `${formatDDMMYYYY(d.date)},${d.value}`);
+    const lines = sortedDaily.map((d) => `${formatDDMMYYYYSlash(d.date)},${d.value}`);
     downloadCSV(
       `india_${type}_${new Date().toISOString().slice(0, 10)}.csv`,
       [header, ...lines].join("\n")
@@ -1274,13 +1275,55 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
         return next;
       });
 
-      setFetchStatus(`Fetched & saved ${j.date}: ${fmtNum0(total)} units`);
+      setFetchStatus(`Fetched & saved ${j.date}: ${fmtNum(total)} units`);
     } catch {
       setFetchStatus("Auto-fetch failed (backend not deployed / source changed).");
     }
   }
 
   const hasData = sortedDaily.length > 0;
+
+  // ----------------------
+  // UI: Daily "From/To" handlers (DD/MM/YY)
+  // ----------------------
+
+  const onFromChange = (v: string) => {
+    setFromText(v);
+    const iso = parseSlashDateToISO(v);
+    if (iso) setFromIso(iso);
+  };
+
+  const onToChange = (v: string) => {
+    setToText(v);
+    const iso = parseSlashDateToISO(v);
+    if (iso) setToIso(iso);
+  };
+
+  const onFromBlur = () => {
+    if (!fromText.trim()) return;
+    const iso = parseSlashDateToISO(fromText);
+    if (iso) {
+      setFromIso(iso);
+      setFromText(formatDDMMYY(iso));
+    } else if (fromIso) {
+      setFromText(formatDDMMYY(fromIso));
+    }
+  };
+
+  const onToBlur = () => {
+    if (!toText.trim()) return;
+    const iso = parseSlashDateToISO(toText);
+    if (iso) {
+      setToIso(iso);
+      setToText(formatDDMMYY(iso));
+    } else if (toIso) {
+      setToText(formatDDMMYY(toIso));
+    }
+  };
+
+  // ----------------------
+  // Render
+  // ----------------------
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -1403,39 +1446,35 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Stat
                   label="Latest day"
-                  value={kpis.latest ? formatDDMMYYYY(kpis.latest.date) : "—"}
-                  sub={kpis.latest ? `${fmtNum0(kpis.latest.value)} units` : null}
+                  value={kpis.latest ? formatDDMMYYYYSlash(kpis.latest.date) : "—"}
+                  sub={kpis.latest ? `${fmtNum(kpis.latest.value)} units` : null}
                 />
 
-                <Stat
-                  label="Latest YoY (same day)"
-                  value={fmtPct0(kpis.latestYoY)}
-                  sub="vs same date last year (if available)"
-                />
+                <Stat label="Latest YoY (same day)" value={fmtPct(kpis.latestYoY, 2)} sub="vs same date last year (if available)" />
 
                 <Stat
                   label="Current 7-Day Average Units"
-                  value={kpis.avg7 != null ? `${fmtNum0(kpis.avg7)} units` : "—"}
-                  sub={kpis.avg7YoY != null ? `${fmtPct0(kpis.avg7YoY)} YoY` : "YoY: —"}
+                  value={kpis.avg7 != null ? `${fmtNum(kpis.avg7)} units` : "—"}
+                  sub={kpis.avg7YoY != null ? `${fmtPct(kpis.avg7YoY, 2)} YoY` : "YoY: —"}
                 />
 
                 <Stat
                   label="Current 30-Day Average Units"
-                  value={kpis.avg30 != null ? `${fmtNum0(kpis.avg30)} units` : "—"}
-                  sub={kpis.avg30YoY != null ? `${fmtPct0(kpis.avg30YoY)} YoY` : "YoY: —"}
+                  value={kpis.avg30 != null ? `${fmtNum(kpis.avg30)} units` : "—"}
+                  sub={kpis.avg30YoY != null ? `${fmtPct(kpis.avg30YoY, 2)} YoY` : "YoY: —"}
                 />
 
                 <Stat
                   label="YTD Total Units (from 1 Apr)"
-                  value={kpis.ytdTotal != null ? `${fmtNum0(kpis.ytdTotal)} units` : "—"}
-                  sub={kpis.ytdYoY != null ? `${fmtPct0(kpis.ytdYoY)} YoY` : "YoY: —"}
+                  value={kpis.ytdTotal != null ? `${fmtNum(kpis.ytdTotal)} units` : "—"}
+                  sub={kpis.ytdYoY != null ? `${fmtPct(kpis.ytdYoY, 2)} YoY` : "YoY: —"}
                   accent="ytd"
                 />
 
                 <Stat
                   label="MTD Average Units"
-                  value={kpis.mtdAvg != null ? `${fmtNum0(kpis.mtdAvg)} units` : "—"}
-                  sub={kpis.mtdYoY != null ? `${fmtPct0(kpis.mtdYoY)} YoY` : "YoY: —"}
+                  value={kpis.mtdAvg != null ? `${fmtNum(kpis.mtdAvg)} units` : "—"}
+                  sub={kpis.mtdYoY != null ? `${fmtPct(kpis.mtdYoY, 2)} YoY` : "YoY: —"}
                 />
               </div>
             )}
@@ -1443,18 +1482,14 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
           <Card title="Recent entries">
             {!hasData ? (
-              <div className="text-sm text-slate-600">
-                Once you add data, the most recent entries will appear here.
-              </div>
+              <div className="text-sm text-slate-600">Once you add data, the most recent entries will appear here.</div>
             ) : (
               <div className="max-h-[420px] overflow-auto rounded-xl ring-1 ring-slate-200">
                 <table className="w-full border-collapse bg-white text-left text-sm">
                   <thead className="sticky top-0 bg-slate-50">
                     <tr>
                       <th className="px-3 py-2 text-xs font-semibold text-slate-600">Date</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">
-                        {seriesLabel} (units)
-                      </th>
+                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">{seriesLabel} (units)</th>
                       <th className="px-3 py-2 text-xs font-semibold text-slate-600"></th>
                     </tr>
                   </thead>
@@ -1464,10 +1499,8 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                       .reverse()
                       .map((r) => (
                         <tr key={r.date} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-medium text-slate-900">
-                            {formatDDMMYYYY(r.date)}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">{fmtNum0(r.value)}</td>
+                          <td className="px-3 py-2 font-medium text-slate-900">{formatDDMMYYYYSlash(r.date)}</td>
+                          <td className="px-3 py-2 text-slate-700">{fmtNum(r.value)}</td>
                           <td className="px-3 py-2 text-right">
                             <button
                               onClick={() => removeDate(r.date)}
@@ -1520,37 +1553,34 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
               <div className="text-sm text-slate-600">Add data to see the daily chart.</div>
             ) : (
               <>
-                {/* Controls wrapper (compact, no blank space) */}
+                {/* ✅ Controls area (kept compact, no layout break) */}
                 <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+                    {/* Left controls */}
                     <div className="flex-1">
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
-                          <div className="text-xs font-medium text-slate-600">From</div>
+                          <div className="text-xs font-medium text-slate-600">From (DD/MM/YY)</div>
                           <input
-                            type="date"
-                            value={fromIso}
-                            onChange={(e) => setFromIso(e.target.value)}
+                            type="text"
+                            value={fromText}
+                            onChange={(e) => onFromChange(e.target.value)}
+                            onBlur={onFromBlur}
+                            placeholder="DD/MM/YY"
                             className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300"
                           />
-                          {/* full DD/MM/YY, never clipped */}
-                          <div className="mt-1 text-[11px] text-slate-500 whitespace-nowrap">
-                            {fromIso ? formatDDMMYYSlash(fromIso) : ""}
-                          </div>
                         </div>
 
                         <div>
-                          <div className="text-xs font-medium text-slate-600">To</div>
+                          <div className="text-xs font-medium text-slate-600">To (DD/MM/YY)</div>
                           <input
-                            type="date"
-                            value={toIso}
-                            onChange={(e) => setToIso(e.target.value)}
+                            type="text"
+                            value={toText}
+                            onChange={(e) => onToChange(e.target.value)}
+                            onBlur={onToBlur}
+                            placeholder="DD/MM/YY"
                             className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300"
                           />
-                          {/* full DD/MM/YY, never clipped */}
-                          <div className="mt-1 text-[11px] text-slate-500 whitespace-nowrap">
-                            {toIso ? formatDDMMYYSlash(toIso) : ""}
-                          </div>
                         </div>
                       </div>
 
@@ -1569,6 +1599,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                       </div>
                     </div>
 
+                    {/* Right controls panel */}
                     <div className="lg:w-[360px] lg:shrink-0">
                       <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
                         <div className="flex items-center justify-between gap-2">
@@ -1661,25 +1692,29 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                   </div>
                 </div>
 
-                {/* Chart: larger height, extra margins to prevent Y-axis clipping */}
+                {/* ✅ Taller chart area */}
                 <div className="h-[360px] sm:h-[420px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart
                       data={dailyForChartWithControl}
-                      margin={{ top: 12, right: 34, bottom: 10, left: 34 }} // MORE space so labels never crop
+                      // ✅ Larger left/right margins prevents Y-axis cropping
+                      margin={{ top: 10, right: 36, bottom: 10, left: 30 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
+
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
 
                       {anyTotalsShown ? (
                         <YAxis
                           yAxisId="left"
-                          width={82} // prevents truncation
+                          // ✅ prevent tick cropping
+                          width={92}
                           tickMargin={10}
                           domain={leftAxisDomain ?? ["auto", "auto"]}
                           padding={{ top: 10, bottom: 10 }}
+                          allowDecimals
                           tick={{ fontSize: 12 }}
-                          tickFormatter={(v) => fmtNum0(asFiniteNumber(v) ?? null)}
+                          tickFormatter={(v) => fmtNum(asFiniteNumber(v) ?? null, 2)}
                         />
                       ) : null}
 
@@ -1687,12 +1722,14 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                         <YAxis
                           yAxisId="right"
                           orientation="right"
-                          width={78} // prevents truncation
+                          // ✅ prevent tick cropping on right
+                          width={78}
                           tickMargin={10}
                           domain={rightAxisDomain ?? ["auto", "auto"]}
                           padding={{ top: 10, bottom: 10 }}
+                          allowDecimals
                           tick={{ fontSize: 12 }}
-                          tickFormatter={(v) => fmtPct0(asFiniteNumber(v) ?? null)}
+                          tickFormatter={(v) => fmtPct(asFiniteNumber(v) ?? null, 2)}
                         />
                       ) : null}
 
@@ -1701,85 +1738,47 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                           const key = (item && (item.dataKey as string)) || (name as string);
                           const num = asFiniteNumber(v);
 
-                          if (key === "units") return [`${fmtNum0(num ?? null)} units`, "Total Current"];
-                          if (key === "prev_year_units") return [`${fmtNum0(num ?? null)} units`, "Total (previous year)"];
+                          if (key === "units") return [`${fmtNum(num ?? null, 2)} units`, "Total Current"];
+                          if (key === "prev_year_units") return [`${fmtNum(num ?? null, 2)} units`, "Total (previous year)"];
+                          if (key === "yoy_pct") return [fmtPct(num ?? null, 2), "YoY %"];
+                          if (key === "mom_pct") return [fmtPct(num ?? null, 2), aggFreq === "weekly" ? "WoW %" : "MoM %"];
 
-                          if (key === "yoy_pct") return [fmtPct0(num ?? null), "YoY %"];
-                          if (key === "mom_pct") return [fmtPct0(num ?? null), aggFreq === "weekly" ? "WoW %" : "MoM %"];
+                          if (key === "__mean_units") return [`${fmtNum(num ?? null, 2)} units`, "Mean"];
+                          if (key === "__p1_units") return [`${fmtNum(num ?? null, 2)} units`, "+1σ"];
+                          if (key === "__p2_units") return [`${fmtNum(num ?? null, 2)} units`, "+2σ"];
+                          if (key === "__m1_units") return [`${fmtNum(num ?? null, 2)} units`, "-1σ"];
+                          if (key === "__m2_units") return [`${fmtNum(num ?? null, 2)} units`, "-2σ"];
 
-                          if (key === "__mean_units") return [`${fmtNum0(num ?? null)} units`, "Mean"];
-                          if (key === "__p1_units") return [`${fmtNum0(num ?? null)} units`, "+1σ"];
-                          if (key === "__p2_units") return [`${fmtNum0(num ?? null)} units`, "+2σ"];
-                          if (key === "__m1_units") return [`${fmtNum0(num ?? null)} units`, "-1σ"];
-                          if (key === "__m2_units") return [`${fmtNum0(num ?? null)} units`, "-2σ"];
+                          if (key === "__mean_yoy") return [fmtPct(num ?? null, 2), "Mean (YoY%)"];
+                          if (key === "__p1_yoy") return [fmtPct(num ?? null, 2), "+1σ (YoY%)"];
+                          if (key === "__p2_yoy") return [fmtPct(num ?? null, 2), "+2σ (YoY%)"];
+                          if (key === "__m1_yoy") return [fmtPct(num ?? null, 2), "-1σ (YoY%)"];
+                          if (key === "__m2_yoy") return [fmtPct(num ?? null, 2), "-2σ (YoY%)"];
 
-                          if (key === "__mean_yoy") return [fmtPct0(num ?? null), "Mean (YoY%)"];
-                          if (key === "__p1_yoy") return [fmtPct0(num ?? null), "+1σ (YoY%)"];
-                          if (key === "__p2_yoy") return [fmtPct0(num ?? null), "+2σ (YoY%)"];
-                          if (key === "__m1_yoy") return [fmtPct0(num ?? null), "-1σ (YoY%)"];
-                          if (key === "__m2_yoy") return [fmtPct0(num ?? null), "-2σ (YoY%)"];
-
-                          if (num != null) return [fmtNum0(num), String(name)];
+                          if (num != null) return [fmtNum(num, 2), String(name)];
                           return [v, String(name)];
                         }}
-                        labelFormatter={(l: any) =>
-                          `${aggFreq === "daily" ? "Date" : aggFreq === "weekly" ? "Week" : aggFreq === "monthly" ? "Month" : "Date"}: ${l}`
-                        }
+                        labelFormatter={(l: any) => `${aggFreq === "daily" ? "Date" : aggFreq === "weekly" ? "Week" : aggFreq === "monthly" ? "Month" : "Date"}: ${l}`}
                       />
                       <Legend />
 
                       {showUnitsSeries ? (
-                        <Line
-                          yAxisId="left"
-                          type="monotone"
-                          dataKey="units"
-                          name="Total Current"
-                          dot={false}
-                          strokeWidth={2}
-                          stroke="#dc2626"
-                        />
+                        <Line yAxisId="left" type="monotone" dataKey="units" name="Total Current" dot={false} strokeWidth={2} stroke="#dc2626" />
                       ) : null}
 
                       {showPrevYearSeries ? (
-                        <Line
-                          yAxisId="left"
-                          type="monotone"
-                          dataKey="prev_year_units"
-                          name="Total (previous year)"
-                          dot={false}
-                          strokeWidth={2}
-                          stroke="#6b7280"
-                          connectNulls
-                        />
+                        <Line yAxisId="left" type="monotone" dataKey="prev_year_units" name="Total (previous year)" dot={false} strokeWidth={2} stroke="#6b7280" connectNulls />
                       ) : null}
 
                       {showYoYSeries ? (
-                        <Line
-                          yAxisId="right"
-                          type="monotone"
-                          dataKey="yoy_pct"
-                          name="YoY %"
-                          dot={false}
-                          strokeWidth={2}
-                          stroke="#16a34a"
-                          connectNulls
-                        />
+                        <Line yAxisId="right" type="monotone" dataKey="yoy_pct" name="YoY %" dot={false} strokeWidth={2} stroke="#16a34a" connectNulls />
                       ) : null}
 
                       {showMoMSeries ? (
-                        <Line
-                          yAxisId="right"
-                          type="monotone"
-                          dataKey="mom_pct"
-                          name={aggFreq === "weekly" ? "WoW %" : "MoM %"}
-                          dot={false}
-                          strokeWidth={2}
-                          stroke="#dc2626"
-                          connectNulls
-                        />
+                        <Line yAxisId="right" type="monotone" dataKey="mom_pct" name={aggFreq === "weekly" ? "WoW %" : "MoM %"} dot={false} strokeWidth={2} stroke="#dc2626" connectNulls />
                       ) : null}
 
-                      {/* Control lines (same colors you already use) */}
+                      {/* Control lines (colors unchanged from your request) */}
                       {showControlLines && controlStatsLeft ? (
                         <>
                           <Line yAxisId="left" type="monotone" dataKey="__mean_units" name="Mean" dot={false} strokeWidth={2} stroke="#000000" connectNulls />
@@ -1806,6 +1805,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
             )}
           </Card>
 
+          {/* Monthly totals + growth chart unchanged */}
           <Card title="Monthly totals + growth">
             {!hasData ? (
               <div className="text-sm text-slate-600">Add data to see monthly totals and growth.</div>
@@ -1816,13 +1816,13 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                     <BarChart data={monthlyForChart} margin={{ top: 10, right: 18, bottom: 10, left: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="month" tick={{ fontSize: 12 }} minTickGap={18} />
-                      <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => fmtNum0(asFiniteNumber(v) ?? null)} />
+                      <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => fmtNum(asFiniteNumber(v) ?? null, 2)} />
                       <Tooltip
                         formatter={(v: any, n: any) => {
                           const num = asFiniteNumber(v);
-                          if (n === "total_units") return [`${fmtNum0(num ?? null)} units`, "Monthly total"];
-                          if (n === "yoy_pct") return [fmtPct0(num ?? null), "YoY"];
-                          if (n === "mom_pct") return [fmtPct0(num ?? null), "MoM"];
+                          if (n === "total_units") return [`${fmtNum(num ?? null, 2)} units`, "Monthly total"];
+                          if (n === "yoy_pct") return [fmtPct(num ?? null, 2), "YoY"];
+                          if (n === "mom_pct") return [fmtPct(num ?? null, 2), "MoM"];
                           return [v, n];
                         }}
                       />
@@ -1837,12 +1837,12 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                     <LineChart data={monthlyForChart} margin={{ top: 10, right: 18, bottom: 10, left: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="month" tick={{ fontSize: 12 }} minTickGap={18} />
-                      <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => fmtPct0(asFiniteNumber(v) ?? null)} />
+                      <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => fmtPct(asFiniteNumber(v) ?? null, 2)} />
                       <Tooltip
                         formatter={(v: any, n: any) => {
                           const num = asFiniteNumber(v);
-                          if (n === "yoy_pct") return [fmtPct0(num ?? null), "YoY"];
-                          if (n === "mom_pct") return [fmtPct0(num ?? null), "MoM"];
+                          if (n === "yoy_pct") return [fmtPct(num ?? null, 2), "YoY"];
+                          if (n === "mom_pct") return [fmtPct(num ?? null, 2), "MoM"];
                           return [v, n];
                         }}
                       />
@@ -1852,134 +1852,127 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
-
-                <div className="rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200">
-                  <div className="text-xs font-semibold text-slate-700">How growth is calculated</div>
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-600">
-                    <li>
-                      <span className="font-medium">MoM%</span> compares the same day-range (e.g., 1st–15th vs 1st–15th of
-                      prior month if current month is incomplete).
-                    </li>
-                    <li>
-                      <span className="font-medium">YoY%</span> compares the same day-range (e.g., 1st–15th vs 1st–15th last
-                      year if current month is incomplete).
-                    </li>
-                  </ul>
-                </div>
               </div>
             )}
           </Card>
         </div>
 
+        {/* ✅ Monthly table card now has periodicity dropdown */}
         <div className="mt-6">
           <Card
             title="Monthly table (last 24 months)"
             right={
-              hasData ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-500">Periodicity</span>
-                  <select
-                    value={tablePeriod}
-                    onChange={(e) => setTablePeriod(e.target.value as any)}
-                    className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700"
-                  >
-                    <option value="monthly">Monthly</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="yearly">Yearly</option>
-                  </select>
-                </div>
-              ) : null
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">Periodicity</span>
+                <select
+                  value={tablePeriod}
+                  onChange={(e) => setTablePeriod(e.target.value as any)}
+                  className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-sm text-slate-700"
+                >
+                  <option value="monthly">Monthly</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="yearly">Yearly (FY)</option>
+                </select>
+              </div>
             }
           >
             {!hasData ? (
               <div className="text-sm text-slate-600">Add data to see the table.</div>
-            ) : tablePeriod === "monthly" ? (
-              <div className="overflow-auto rounded-xl ring-1 ring-slate-200">
-                <table className="w-full border-collapse bg-white text-left text-sm">
-                  <thead className="sticky top-0 bg-slate-50">
-                    <tr>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">Month</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">Total (units)</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">MoM%</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">YoY%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monthlyForChart
-                      .slice()
-                      .reverse()
-                      .map((m) => (
-                        <tr key={m.month} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-medium text-slate-900">{m.month}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtNum0(m.total_units)}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtPct0(m.mom_pct)}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtPct0(m.yoy_pct)}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : tablePeriod === "weekly" ? (
-              <div className="overflow-auto rounded-xl ring-1 ring-slate-200">
-                <table className="w-full border-collapse bg-white text-left text-sm">
-                  <thead className="sticky top-0 bg-slate-50">
-                    <tr>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">Week</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">Total (units)</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">WoW%</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">YoY%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {weeklyRows
-                      .slice()
-                      .reverse()
-                      .map((w) => (
-                        <tr key={w.week_start_iso} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-medium text-slate-900">
-                            Week starting {formatDDMMYYYYSlash(w.week_start_iso)}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">{fmtNum0(w.total_units)}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtPct0(w.wow_pct)}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtPct0(w.yoy_pct)}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
             ) : (
-              <div className="overflow-auto rounded-xl ring-1 ring-slate-200">
-                <table className="w-full border-collapse bg-white text-left text-sm">
-                  <thead className="sticky top-0 bg-slate-50">
-                    <tr>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">FY</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">Total (units)</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">YoY%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fyRows
-                      .slice()
-                      .reverse()
-                      .map((fy) => (
-                        <tr key={fy.fy_label} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-medium text-slate-900">{fy.fy_label}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtNum0(fy.total_units)}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtPct0(fy.yoy_pct)}</td>
+              <>
+                {/* MONTHLY */}
+                {tablePeriod === "monthly" ? (
+                  <div className="overflow-auto rounded-xl ring-1 ring-slate-200">
+                    <table className="w-full border-collapse bg-white text-left text-sm">
+                      <thead className="sticky top-0 bg-slate-50">
+                        <tr>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">Month</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">Total (units)</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">MoM%</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">YoY%</th>
                         </tr>
-                      ))}
-                  </tbody>
-                </table>
-                <div className="px-3 py-2 text-[11px] text-slate-500">
-                  FY is Apr–Mar. YoY% uses comparable window for partial FYs (up to the latest available date in that FY).
-                </div>
-              </div>
+                      </thead>
+                      <tbody>
+                        {monthlyForChart
+                          .slice()
+                          .reverse()
+                          .map((m) => (
+                            <tr key={m.month} className="border-t border-slate-100">
+                              <td className="px-3 py-2 font-medium text-slate-900">{m.month}</td>
+                              <td className="px-3 py-2 text-slate-700">{fmtNum(m.total_units, 2)}</td>
+                              <td className="px-3 py-2 text-slate-700">{fmtPct(m.mom_pct, 2)}</td>
+                              <td className="px-3 py-2 text-slate-700">{fmtPct(m.yoy_pct, 2)}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+
+                {/* WEEKLY */}
+                {tablePeriod === "weekly" ? (
+                  <div className="overflow-auto rounded-xl ring-1 ring-slate-200">
+                    <table className="w-full border-collapse bg-white text-left text-sm">
+                      <thead className="sticky top-0 bg-slate-50">
+                        <tr>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">Week</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">Total (units)</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">WoW%</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">YoY%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {weeklyForTable
+                          .slice()
+                          .reverse()
+                          .map((w) => (
+                            <tr key={w.week_start} className="border-t border-slate-100">
+                              <td className="px-3 py-2 font-medium text-slate-900">
+                                Week starting {formatDDMMYYYYSlash(w.week_start)}
+                              </td>
+                              <td className="px-3 py-2 text-slate-700">{fmtNum(w.total_units, 2)}</td>
+                              <td className="px-3 py-2 text-slate-700">{fmtPct(w.wow_pct, 2)}</td>
+                              <td className="px-3 py-2 text-slate-700">{fmtPct(w.yoy_pct, 2)}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+
+                {/* YEARLY (FY) */}
+                {tablePeriod === "yearly" ? (
+                  <div className="overflow-auto rounded-xl ring-1 ring-slate-200">
+                    <table className="w-full border-collapse bg-white text-left text-sm">
+                      <thead className="sticky top-0 bg-slate-50">
+                        <tr>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">FY</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">Total (units)</th>
+                          <th className="px-3 py-2 text-xs font-semibold text-slate-600">YoY%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fyForTable
+                          .slice()
+                          .reverse()
+                          .map((fy) => (
+                            <tr key={fy.fy_end} className="border-t border-slate-100">
+                              <td className="px-3 py-2 font-medium text-slate-900">{fy.label}</td>
+                              <td className="px-3 py-2 text-slate-700">{fmtNum(fy.total_units, 2)}</td>
+                              <td className="px-3 py-2 text-slate-700">{fmtPct(fy.yoy_pct, 2)}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+              </>
             )}
           </Card>
         </div>
 
         <div className="mt-6 text-xs text-slate-500">
-          Tip: Auto-fetch needs a small backend proxy because sources often block browser-to-site requests (CORS).
+          Tip: Auto-fetch needs a backend proxy because sources often block browser-to-site requests (CORS).
           This UI expects an endpoint at /api/cea/daily that returns a {"{ date, total_mu }"} payload.
         </div>
       </div>
