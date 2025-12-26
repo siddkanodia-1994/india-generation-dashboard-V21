@@ -534,7 +534,6 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
   const fmtValue = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
-    // Critical: round to EXACT decimals here to prevent float tooltip noise
     const rounded = Number(x.toFixed(valueDisplay.decimals));
     return `${new Intl.NumberFormat("en-IN", {
       minimumFractionDigits: valueDisplay.decimals,
@@ -583,7 +582,13 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
   const [fromIso, setFromIso] = useState("");
   const [toIso, setToIso] = useState("");
-  const [aggFreq, setAggFreq] = useState<"daily" | "weekly" | "monthly" | "rolling30">("daily");
+
+  // ✅ DEFAULT: Rolling Avg is the first/default in all tabs.
+  // - sum tabs (Gen/Demand/Supply): use "rolling30avg"
+  // - avg tabs (Coal PLF/RTM): use "rolling30" (already avg)
+  const [aggFreq, setAggFreq] = useState<
+    "daily" | "weekly" | "monthly" | "rolling30" | "rolling30avg"
+  >(() => (calcMode === "sum" ? "rolling30avg" : "rolling30"));
 
   const [showUnitsSeries, setShowUnitsSeries] = useState(true);
   const [showPrevYearSeries, setShowPrevYearSeries] = useState(true);
@@ -599,7 +604,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
     document.title = title;
   }, [title]);
 
-  // Load CSV from public (GitHub-backed) path, support spaces using encodeURI
+  // Load CSV from public path, support spaces using encodeURI
   useEffect(() => {
     let cancelled = false;
 
@@ -662,8 +667,6 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
   }, [sortedDaily, toIso, fromIso, rangeDays]);
 
   const dailyLookup = useMemo(() => new Map(sortedDaily.map((d) => [d.date, d.value] as const)), [sortedDaily]);
-
-  // Used for Monthly view in Daily chart: full-month sums/avgs even if From is mid-month
   const monthAggMap = useMemo(() => buildMonthAggMap(sortedDaily), [sortedDaily]);
 
   const dailyForChart = useMemo<DailyChartPoint[]>(() => {
@@ -721,15 +724,18 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
       });
     }
 
-    // Rolling 30: sum vs avg based on calcMode
-    if (aggFreq === "rolling30") {
+    // ✅ Rolling 30: now supports BOTH rolling sum and rolling avg in sum-tabs
+    if (aggFreq === "rolling30" || aggFreq === "rolling30avg") {
+      const rollingMode: "sum" | "avg" =
+        aggFreq === "rolling30avg" ? "avg" : calcMode; // avg tabs already calcMode=avg
+
       const points: DailyChartPoint[] = [];
       let cur = f;
       while (cur <= t) {
         const start = isoMinusDays(cur, 29);
         const currSC = sumCountRangeInclusive(start, cur);
         const currVal =
-          calcMode === "sum"
+          rollingMode === "sum"
             ? (currSC.sum ?? 0)
             : (currSC.sum != null && currSC.count ? currSC.sum / currSC.count : 0);
 
@@ -737,7 +743,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
         const startPrevYear = isoMinusDays(curPrevYear, 29);
         const prevSC = sumCountRangeInclusive(startPrevYear, curPrevYear);
         const prevVal =
-          calcMode === "sum"
+          rollingMode === "sum"
             ? prevSC.sum
             : (prevSC.sum != null && prevSC.count ? prevSC.sum / prevSC.count : null);
 
@@ -836,7 +842,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
     });
   }, [sortedDaily, dailyLookup, fromIso, toIso, rangeDays, aggFreq, calcMode, monthAggMap]);
 
-  // Control lines + domains based on shown series
+  // Control lines + domains
   const controlStatsLeft = useMemo(() => {
     if (!showControlLines) return null;
     if (!dailyForChart.length) return null;
@@ -934,7 +940,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
     }));
   }, [monthlyAgg]);
 
-  // ✅ Mean for the monthly bar chart (mean of the values shown)
+  // Mean for monthly bar chart (mean of values shown)
   const monthlyChartMean = useMemo(() => {
     if (!monthlyForChart.length) return null;
     const vals = monthlyForChart
@@ -946,7 +952,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
   const kpis = useMemo(() => computeKPIs(sortedDaily, calcMode), [sortedDaily, calcMode]);
 
-  // Weekly/Yearly rows for periodicity table (avg for avg mode; sum for sum mode)
+  // Weekly/Yearly rows for periodicity table
   const weeklyRows = useMemo(() => {
     if (!sortedDaily.length) return [];
 
@@ -1010,43 +1016,6 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
     const fys = Array.from(fySum.keys()).sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
 
-    const isoAddYears = (iso: string, deltaYears: number) => {
-      const y = Number(iso.slice(0, 4));
-      const m = Number(iso.slice(5, 7));
-      const d = Number(iso.slice(8, 10));
-      const tryDt = new Date(Date.UTC(y + deltaYears, m - 1, d));
-      if (
-        tryDt.getUTCFullYear() === y + deltaYears &&
-        tryDt.getUTCMonth() === m - 1 &&
-        tryDt.getUTCDate() === d
-      ) return tryDt.toISOString().slice(0, 10);
-      const lastDay = new Date(Date.UTC(y + deltaYears, m, 0));
-      return lastDay.toISOString().slice(0, 10);
-    };
-
-    const fyStartIsoFromFYLabel = (fy: string) => {
-      const yy = Number(fy.slice(2));
-      const fyEndYear = 2000 + yy;
-      const fyStartYear = fyEndYear - 1;
-      return `${fyStartYear}-04-01`;
-    };
-
-    const sumCountInclusive = (startIso: string, endIso: string, dailyLookup: Map<string, number>) => {
-      if (startIso > endIso) return { sum: null as number | null, count: 0 };
-      let sum = 0;
-      let count = 0;
-      let cur = startIso;
-      while (cur <= endIso) {
-        const v = dailyLookup.get(cur);
-        if (v != null) {
-          sum += v;
-          count += 1;
-        }
-        cur = isoPlusDays(cur, 1);
-      }
-      return { sum: count ? sum : null, count };
-    };
-
     return fys.map((fy) => {
       const sum = fySum.get(fy)!;
       const cnt = fyCount.get(fy)!;
@@ -1057,47 +1026,12 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
       const prevCnt = fyCount.get(prevFY);
       const prev = prevSum != null && prevCnt ? (calcMode === "sum" ? prevSum : prevSum / prevCnt) : null;
 
-      const fyEndYear = 2000 + Number(fy.slice(2));
-      const fyEnd = `${fyEndYear}-03-31`;
-      const maxDate = fyMaxDate.get(fy)!;
-      const isComplete = maxDate >= fyEnd;
-
-      let yoy: number | null = null;
-
-      if (prevSum != null && prevCnt) {
-        if (isComplete) {
-          yoy = prev != null ? growthPct(curr, prev) : null;
-        } else {
-          const start = fyStartIsoFromFYLabel(fy);
-          const prevStart = fyStartIsoFromFYLabel(prevFY);
-          const prevEnd = isoAddYears(maxDate, -1);
-
-          const currSC = sumCountInclusive(start, maxDate, dailyLookup);
-          const prevSC = sumCountInclusive(prevStart, prevEnd, dailyLookup);
-
-          const currVal =
-            calcMode === "sum"
-              ? currSC.sum
-              : (currSC.sum != null && currSC.count ? currSC.sum / currSC.count : null);
-
-          const prevVal =
-            calcMode === "sum"
-              ? prevSC.sum
-              : (prevSC.sum != null && prevSC.count ? prevSC.sum / prevSC.count : null);
-
-          yoy = currVal != null && prevVal != null ? growthPct(currVal, prevVal) : null;
-        }
-      }
-
+      const yoy = prev != null ? growthPct(curr, prev) : null;
       return { fy, value: curr, yoy_pct: yoy };
     });
-  }, [sortedDaily, calcMode, dailyLookup]);
+  }, [sortedDaily, calcMode]);
 
   const hasData = sortedDaily.length > 0;
-
-  /* -----------------------------
-     Actions
-  ----------------------------- */
 
   function upsertOne() {
     setMsg(null);
@@ -1167,23 +1101,16 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
     downloadCSV(`india_${type}_${new Date().toISOString().slice(0, 10)}.csv`, [header, ...lines].join("\n"));
   }
 
-  function loadSample() {
-    const { parsed } = csvParse(sampleCSV(valueColumnKey));
-    setDataMap((prev) => mergeRecords(prev, parsed));
-    setMsg("Loaded sample data.");
-  }
-
   async function fetchLatestFromCEA() {
     setFetchStatus("Auto-fetch not enabled for this tab.");
   }
 
-  const viewLabelWeekly = calcMode === "avg" ? "Weekly (Avg)" : "Weekly (sum)";
-  const viewLabelMonthly = calcMode === "avg" ? "Monthly (Avg)" : "Monthly (sum)";
-  const viewLabelRolling =
-    calcMode === "avg" ? "Last 30 days rolling Avg (YoY Growth)" : "Last 30 Days Rolling Sum (YoY Growth)";
-
   const periodValueLabel = calcMode === "avg" ? "Avg" : "Total";
   const ytdLabel = calcMode === "avg" ? "YTD Avg (from 1 Apr)" : "YTD Total (from 1 Apr)";
+
+  // Rolling labels
+  const rollingAvgLabel = "Last 30 Days Rolling Avg (YoY Growth)";
+  const rollingSumLabel = "Last 30 Days Rolling Sum (YoY Growth)";
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -1229,177 +1156,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <Card title="Add / Update a day">
-            <div className="grid grid-cols-1 gap-3">
-              <label className="text-xs font-medium text-slate-600">Date (DD-MM-YYYY)</label>
-              <input
-                type="text"
-                placeholder="DD-MM-YYYY"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300"
-              />
-
-              <label className="mt-1 text-xs font-medium text-slate-600">
-                {seriesLabel} ({unitLabel})
-              </label>
-              <input
-                inputMode="decimal"
-                placeholder="e.g., 10"
-                value={valueText}
-                onChange={(e) => setValueText(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300"
-              />
-
-              <button
-                onClick={upsertOne}
-                className="mt-1 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-              >
-                Save day
-              </button>
-
-              <div className="mt-2">
-                <div className="text-xs font-medium text-slate-600">Import CSV</div>
-                <div className="mt-2 flex items-center gap-2">
-                  <input
-                    ref={fileRef}
-                    type="file"
-                    accept=".csv,text/csv"
-                    onChange={(e) => importCSV(e.target.files?.[0])}
-                    className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-xl file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-slate-800"
-                  />
-                </div>
-                <div className="mt-2 text-xs text-slate-500">
-                  Supported: <span className="font-mono">date,VALUE</span> (DD-MM-YYYY, number)
-                </div>
-              </div>
-
-              {msg ? (
-                <div className="mt-2 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-200">
-                  {msg}
-                </div>
-              ) : null}
-
-              {fetchStatus ? (
-                <div className="mt-2 rounded-xl bg-slate-900/5 p-3 text-sm text-slate-800 ring-1 ring-slate-200">
-                  {fetchStatus}
-                </div>
-              ) : null}
-
-              {errors.length ? (
-                <div className="mt-2 rounded-xl bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">
-                  <div className="font-semibold">Import / input issues</div>
-                  <ul className="mt-1 list-disc pl-5">
-                    {errors.map((e, i) => (
-                      <li key={i}>{e}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </div>
-          </Card>
-
-          <Card title="Quick stats" right={hasData ? `Records: ${sortedDaily.length}` : null}>
-            {!hasData ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
-                <div className="text-lg font-semibold text-slate-900">No data yet</div>
-                <div className="mt-2 text-sm text-slate-600">Add datapoints or import a CSV.</div>
-                <div className="mt-5 flex justify-center">
-                  <button
-                    onClick={loadSample}
-                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                  >
-                    Load sample data
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Stat
-                  label="Latest day"
-                  value={kpis.latest ? formatDDMMYYYY(kpis.latest.date) : "—"}
-                  sub={
-                    kpis.latest ? (
-                      <div className="text-sm font-medium text-slate-600">{fmtValue(kpis.latest.value)}</div>
-                    ) : null
-                  }
-                />
-
-                <Stat
-                  label="Latest YoY (same day)"
-                  value={fmtPct(kpis.latestYoY)}
-                  sub={<div className="text-sm text-slate-500">vs same date last year (if available)</div>}
-                />
-
-                <Stat
-                  label="Current 7-Day Average"
-                  value={kpis.avg7 != null ? fmtValue(kpis.avg7) : "—"}
-                  sub={<YoYSub value={kpis.avg7YoY} suffix="YoY" />}
-                />
-
-                <Stat
-                  label="Current 30-Day Average"
-                  value={kpis.avg30 != null ? fmtValue(kpis.avg30) : "—"}
-                  sub={<YoYSub value={kpis.avg30YoY} suffix="YoY" />}
-                />
-
-                <Stat
-                  label={ytdLabel}
-                  value={kpis.ytdValue != null ? fmtValue(kpis.ytdValue) : "—"}
-                  sub={<YoYSub value={kpis.ytdYoY} suffix="YoY" />}
-                />
-
-                <Stat
-                  label="MTD Average"
-                  value={kpis.mtdAvg != null ? fmtValue(kpis.mtdAvg) : "—"}
-                  sub={<YoYSub value={kpis.mtdYoY} suffix="YoY" />}
-                />
-              </div>
-            )}
-          </Card>
-
-          <Card title="Recent entries">
-            {!hasData ? (
-              <div className="text-sm text-slate-600">Once you add data, the most recent entries will appear here.</div>
-            ) : (
-              <div className="max-h-[420px] overflow-auto rounded-xl ring-1 ring-slate-200">
-                <table className="w-full border-collapse bg-white text-left text-sm">
-                  <thead className="sticky top-0 bg-slate-50">
-                    <tr>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">Date</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">
-                        {seriesLabel} ({unitLabel})
-                      </th>
-                      <th className="px-3 py-2 text-xs font-semibold text-slate-600"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedDaily
-                      .slice(-25)
-                      .reverse()
-                      .map((r) => (
-                        <tr key={r.date} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-medium text-slate-900">{formatDDMMYYYY(r.date)}</td>
-                          <td className="px-3 py-2 text-slate-700">{fmtValue(r.value)}</td>
-                          <td className="px-3 py-2 text-right">
-                            <button
-                              onClick={() => removeDate(r.date)}
-                              className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
-        </div>
-
-        {/* Daily chart (full width) */}
+        {/* ✅ REORDERED: Daily chart section moved ABOVE Add/Update + Quick Stats + Recent Entries */}
         <div className="mt-6 grid grid-cols-1 gap-4">
           <Card
             title={`Daily ${seriesLabel.toLowerCase()}`}
@@ -1469,19 +1226,28 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
 
                       <div className="mt-3">
                         <div className="text-xs font-medium text-slate-600">View as</div>
+
+                        {/* ✅ Reordered dropdown:
+                            - Rolling Avg becomes FIRST + default for ALL tabs
+                            - Sum tabs show BOTH rolling avg + rolling sum
+                            - Avg tabs show rolling avg only (existing behavior)
+                        */}
                         <select
                           value={aggFreq}
                           onChange={(e) => setAggFreq(e.target.value as any)}
                           className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
                         >
+                          {calcMode === "sum" ? (
+                            <option value="rolling30avg">{rollingAvgLabel}</option>
+                          ) : (
+                            <option value="rolling30">{rollingAvgLabel}</option>
+                          )}
+
                           <option value="daily">Daily</option>
                           <option value="weekly">{calcMode === "avg" ? "Weekly (Avg)" : "Weekly (sum)"}</option>
                           <option value="monthly">{calcMode === "avg" ? "Monthly (Avg)" : "Monthly (sum)"}</option>
-                          <option value="rolling30">
-                            {calcMode === "avg"
-                              ? "Last 30 days rolling Avg (YoY Growth)"
-                              : "Last 30 Days Rolling Sum (YoY Growth)"}
-                          </option>
+
+                          {calcMode === "sum" ? <option value="rolling30">{rollingSumLabel}</option> : null}
                         </select>
                       </div>
                     </div>
@@ -1724,7 +1490,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                         }}
                       />
 
-                      {/* ✅ NEW: Mean reference line (dotted black) */}
+                      {/* Mean reference line (dotted black) */}
                       {monthlyChartMean != null ? (
                         <ReferenceLine
                           y={monthlyChartMean}
@@ -1735,14 +1501,12 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                         />
                       ) : null}
 
-                      {/* ✅ FIX: Tooltip values always rounded to 2 decimals */}
                       <Tooltip
                         formatter={(v: any, n: any) => {
                           const num = asFiniteNumber(v);
                           if (n === "value") return [fmtValue(num ?? null), `Monthly ${periodValueLabel}`];
                           if (n === "yoy_pct") return [fmtPct(num ?? null), "YoY"];
                           if (n === "mom_pct") return [fmtPct(num ?? null), "MoM"];
-                          // fallback: still force 2 dp if numeric
                           if (num != null) return [fmtValue(num), String(n)];
                           return [v, String(n)];
                         }}
@@ -1766,6 +1530,169 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+              </div>
+            )}
+          </Card>
+        </div>
+
+        {/* Add/Update + Stats + Recent Entries (moved BELOW Daily card) */}
+        <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <Card title="Add / Update a day">
+            <div className="grid grid-cols-1 gap-3">
+              <label className="text-xs font-medium text-slate-600">Date (DD-MM-YYYY)</label>
+              <input
+                type="text"
+                placeholder="DD-MM-YYYY"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300"
+              />
+
+              <label className="mt-1 text-xs font-medium text-slate-600">
+                {seriesLabel} ({unitLabel})
+              </label>
+              <input
+                inputMode="decimal"
+                placeholder="e.g., 10"
+                value={valueText}
+                onChange={(e) => setValueText(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300"
+              />
+
+              <button
+                onClick={upsertOne}
+                className="mt-1 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                Save day
+              </button>
+
+              <div className="mt-2">
+                <div className="text-xs font-medium text-slate-600">Import CSV</div>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    onChange={(e) => importCSV(e.target.files?.[0])}
+                    className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-xl file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-slate-800"
+                  />
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  Supported: <span className="font-mono">date,VALUE</span> (DD-MM-YYYY, number)
+                </div>
+              </div>
+
+              {msg ? (
+                <div className="mt-2 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-200">
+                  {msg}
+                </div>
+              ) : null}
+
+              {fetchStatus ? (
+                <div className="mt-2 rounded-xl bg-slate-900/5 p-3 text-sm text-slate-800 ring-1 ring-slate-200">
+                  {fetchStatus}
+                </div>
+              ) : null}
+
+              {errors.length ? (
+                <div className="mt-2 rounded-xl bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">
+                  <div className="font-semibold">Import / input issues</div>
+                  <ul className="mt-1 list-disc pl-5">
+                    {errors.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          </Card>
+
+          <Card title="Quick stats" right={hasData ? `Records: ${sortedDaily.length}` : null}>
+            {!hasData ? (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+                <div className="text-lg font-semibold text-slate-900">No data yet</div>
+                <div className="mt-2 text-sm text-slate-600">Add datapoints or import a CSV.</div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Stat
+                  label="Latest day"
+                  value={kpis.latest ? formatDDMMYYYY(kpis.latest.date) : "—"}
+                  sub={
+                    kpis.latest ? (
+                      <div className="text-sm font-medium text-slate-600">{fmtValue(kpis.latest.value)}</div>
+                    ) : null
+                  }
+                />
+
+                <Stat
+                  label="Latest YoY (same day)"
+                  value={fmtPct(kpis.latestYoY)}
+                  sub={<div className="text-sm text-slate-500">vs same date last year (if available)</div>}
+                />
+
+                <Stat
+                  label="Current 7-Day Average"
+                  value={kpis.avg7 != null ? fmtValue(kpis.avg7) : "—"}
+                  sub={<YoYSub value={kpis.avg7YoY} suffix="YoY" />}
+                />
+
+                <Stat
+                  label="Current 30-Day Average"
+                  value={kpis.avg30 != null ? fmtValue(kpis.avg30) : "—"}
+                  sub={<YoYSub value={kpis.avg30YoY} suffix="YoY" />}
+                />
+
+                <Stat
+                  label={ytdLabel}
+                  value={kpis.ytdValue != null ? fmtValue(kpis.ytdValue) : "—"}
+                  sub={<YoYSub value={kpis.ytdYoY} suffix="YoY" />}
+                />
+
+                <Stat
+                  label="MTD Average"
+                  value={kpis.mtdAvg != null ? fmtValue(kpis.mtdAvg) : "—"}
+                  sub={<YoYSub value={kpis.mtdYoY} suffix="YoY" />}
+                />
+              </div>
+            )}
+          </Card>
+
+          <Card title="Recent entries">
+            {!hasData ? (
+              <div className="text-sm text-slate-600">Once you add data, the most recent entries will appear here.</div>
+            ) : (
+              <div className="max-h-[420px] overflow-auto rounded-xl ring-1 ring-slate-200">
+                <table className="w-full border-collapse bg-white text-left text-sm">
+                  <thead className="sticky top-0 bg-slate-50">
+                    <tr>
+                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">Date</th>
+                      <th className="px-3 py-2 text-xs font-semibold text-slate-600">
+                        {seriesLabel} ({unitLabel})
+                      </th>
+                      <th className="px-3 py-2 text-xs font-semibold text-slate-600"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedDaily
+                      .slice(-25)
+                      .reverse()
+                      .map((r) => (
+                        <tr key={r.date} className="border-t border-slate-100">
+                          <td className="px-3 py-2 font-medium text-slate-900">{formatDDMMYYYY(r.date)}</td>
+                          <td className="px-3 py-2 text-slate-700">{fmtValue(r.value)}</td>
+                          <td className="px-3 py-2 text-right">
+                            <button
+                              onClick={() => removeDate(r.date)}
+                              className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </Card>
