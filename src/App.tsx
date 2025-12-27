@@ -13,7 +13,7 @@ export default function App() {
           <div className="mt-2">
             <TabList>
               <Tab>Generation</Tab>
-              <Tab>Demand</Tab>
+              <Tab>Peak Demand Met</Tab>
               <Tab>Supply</Tab>
               <Tab>Coal PLF</Tab>
               <Tab>RTM Prices</Tab>
@@ -43,17 +43,19 @@ export default function App() {
           <TabPanel>
             <ElectricityDashboard
               type="demand"
-              title="India Electricity Demand Dashboard"
-              subtitle="Daily demand data, trends, and YoY/MoM analytics"
-              seriesLabel="Demand"
-              // ✅ Units explicitly MU for Demand
+              title="India Peak Demand Met Dashboard"
+              subtitle="Daily peak demand met data, trends, and YoY/MoM analytics"
+              seriesLabel="Peak Demand Met"
+              // Keeping MU to avoid breaking any existing formatting expectations in this repo.
+              // If your Peak Demand CSV is in MW, you can change unitLabel/suffix/decimals later.
               unitLabel="MU"
               valueColumnKey="demand_gwh"
-              defaultCsvPath="/data/demand.csv"
+              // ✅ renamed file
+              defaultCsvPath="/data/Peak Demand.csv"
               enableAutoFetch={false}
-              calcMode="sum"
+              // ✅ switch to averages for peak metric
+              calcMode="avg"
               valueDisplay={{
-                // ✅ All display strings show MU
                 suffix: " MU",
                 decimals: 2,
               }}
