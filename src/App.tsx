@@ -42,23 +42,22 @@ export default function App() {
             />
           </TabPanel>
 
+          {/* ✅ ONLY THIS TAB UPDATED: Peak Demand Met units MU -> GW */}
           <TabPanel>
             <ElectricityDashboard
               type="demand"
               title="India Peak Demand Met Dashboard"
-              subtitle="Daily peak demand met data, trends, and YoY/MoM analytics"
+              subtitle="Daily peak demand met data (GW), trends, and YoY/MoM analytics"
               seriesLabel="Peak Demand Met"
-              // Keeping MU to avoid breaking any existing formatting expectations in this repo.
-              // If your Peak Demand CSV is in MW, you can change unitLabel/suffix/decimals later.
-              unitLabel="MU"
+              // ✅ Peak demand is instantaneous POWER, not energy → GW
+              unitLabel="GW"
               valueColumnKey="demand_gwh"
-              // ✅ renamed file
               defaultCsvPath="/data/Peak Demand.csv"
               enableAutoFetch={false}
-              // ✅ switch to averages for peak metric
               calcMode="avg"
               valueDisplay={{
-                suffix: " MU",
+                // ✅ All display strings show GW
+                suffix: " GW",
                 decimals: 2,
               }}
             />
