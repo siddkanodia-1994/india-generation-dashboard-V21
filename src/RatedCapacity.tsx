@@ -171,34 +171,53 @@ function normalizeHeader(h: string) {
 }
 
 /**
- * ✅ ONLY CHANGE vs your original:
- * Accepts Month column as MM/YYYY OR DD/MM/YYYY (or DD-MM-YYYY), but treats it as MONTHLY.
- * We ignore DD and normalize internally to MM/YYYY.
+ * ✅ UPDATED:
+ * Accepts:
+ *  - MM/YYYY or M/YYYY
+ *  - DD/MM/YYYY or D/M/YYYY (treated as monthly -> MM/YYYY)
+ *  - DD/MM/YY or D/M/YY (treated as monthly; YY -> 20YY)
+ *  - DD-MM-YYYY or DD-MM-YY (treated as monthly)
  */
 function normalizeMonth(m: string) {
   const t = (m || "").trim();
 
-  // Case 1: MM/YYYY or M/YYYY  -> normalize to MM/YYYY
-  let m1 = t.match(/^(\d{1,2})\/(\d{4})$/);
-  if (m1) {
-    const mm = String(Number(m1[1])).padStart(2, "0");
-    const yyyy = m1[2];
+  // MM/YYYY
+  let r = t.match(/^(\d{1,2})\/(\d{4})$/);
+  if (r) {
+    const mm = String(Number(r[1])).padStart(2, "0");
+    const yyyy = r[2];
     return `${mm}/${yyyy}`;
   }
 
-  // Case 2: DD/MM/YYYY or D/M/YYYY -> treat as MONTHLY (ignore DD)
-  m1 = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m1) {
-    const mm = String(Number(m1[2])).padStart(2, "0");
-    const yyyy = m1[3];
+  // DD/MM/YYYY
+  r = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (r) {
+    const mm = String(Number(r[2])).padStart(2, "0");
+    const yyyy = r[3];
     return `${mm}/${yyyy}`;
   }
 
-  // Case 3: DD-MM-YYYY or D-M-YYYY -> treat as MONTHLY (ignore DD)
-  m1 = t.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (m1) {
-    const mm = String(Number(m1[2])).padStart(2, "0");
-    const yyyy = m1[3];
+  // DD/MM/YY  -> assume 20YY
+  r = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+  if (r) {
+    const mm = String(Number(r[2])).padStart(2, "0");
+    const yyyy = `20${r[3]}`;
+    return `${mm}/${yyyy}`;
+  }
+
+  // DD-MM-YYYY
+  r = t.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (r) {
+    const mm = String(Number(r[2])).padStart(2, "0");
+    const yyyy = r[3];
+    return `${mm}/${yyyy}`;
+  }
+
+  // DD-MM-YY  -> assume 20YY
+  r = t.match(/^(\d{1,2})-(\d{1,2})-(\d{2})$/);
+  if (r) {
+    const mm = String(Number(r[2])).padStart(2, "0");
+    const yyyy = `20${r[3]}`;
     return `${mm}/${yyyy}`;
   }
 
@@ -389,8 +408,11 @@ export default function RatedCapacity() {
 
         const normHeaders = header.map(normalizeHeader);
 
-        const monthIdx = normHeaders.findIndex((h) => h === "month");
-        if (monthIdx === -1) throw new Error(`Missing "Month" column`);
+        // ✅ UPDATED: accept Month OR Date OR Capacity (GW) as the month/date column
+        const monthIdx = normHeaders.findIndex(
+          (h) => h === "month" || h === "date" || h === "capacity (gw)" || h === "capacity(gw)"
+        );
+        if (monthIdx === -1) throw new Error(`Missing Month/Date column`);
 
         const sourceIdx: Record<SourceKey, number> = {} as any;
         for (const s of SOURCES) {
@@ -422,7 +444,7 @@ export default function RatedCapacity() {
 
           if (!parsed.length) {
             setHistoryError(
-              `Loaded ${path} but found 0 valid Month rows. Ensure Month is MM/YYYY or DD/MM/YYYY.`
+              `Loaded ${path} but found 0 valid rows. Ensure the first column is Month/Date and has values like MM/YYYY or DD/MM/YY.`
             );
           }
         }
@@ -431,7 +453,7 @@ export default function RatedCapacity() {
           setHistory([]);
           setHistoryLoadedFrom(null);
           setHistoryError(
-            "capacity.csv not loaded – ensure /public/data/capacity.csv exists with Month + source columns."
+            "capacity.csv not loaded – ensure /public/data/capacity.csv exists with Month/Date + source columns."
           );
         }
       }
@@ -501,6 +523,9 @@ export default function RatedCapacity() {
     <div className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-7xl px-4 py-8">
         <div className="grid grid-cols-1 gap-6">
+          {/* ===========================
+              Rated Capacity (existing)
+              =========================== */}
           <Card title="Rated Capacity" right={<div className="text-xs text-slate-500">GW</div>}>
             {capacityCsvMissing && capacityCsvMsg ? (
               <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
@@ -599,6 +624,9 @@ export default function RatedCapacity() {
             </div>
           </Card>
 
+          {/* ===========================
+              Historical Capacity (NEW)
+              =========================== */}
           <Card title="Historical Capacity" right={<div className="text-xs text-slate-500">GW</div>}>
             <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
