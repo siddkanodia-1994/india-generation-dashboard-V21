@@ -4,7 +4,6 @@ import "react-tabs/style/react-tabs.css";
 
 import ElectricityDashboard from "./ElectricityDashboard";
 import RatedCapacity from "./RatedCapacity";
-import Summary from "./Summary";
 import LatestNews from "./LatestNews";
 import LatestReports from "./LatestReports";
 
@@ -22,7 +21,6 @@ export default function App() {
               <Tab>RTM Prices</Tab>
               <Tab>DAM Prices</Tab>
               <Tab>Rated Capacity</Tab>
-              <Tab>Summary</Tab>
               <Tab>Latest News</Tab>
               <Tab>Latest Reports</Tab>
             </TabList>
@@ -214,13 +212,6 @@ export default function App() {
           </TabPanel>
 
           {/* ===========================
-              Summary (NEW MAIN TAB)
-              =========================== */}
-          <TabPanel>
-            <Summary />
-          </TabPanel>
-
-          {/* ===========================
               Latest News
               =========================== */}
           <TabPanel>
@@ -237,4 +228,4 @@ export default function App() {
       </div>
     </div>
   );
-}
+}.
