@@ -631,6 +631,7 @@ export type ElectricityDashboardProps = {
 
 // explicit view types
 type ViewAs =
+  | "rolling45_avg"
   | "rolling30_avg"
   | "rolling14_avg"
   | "daily"
@@ -891,6 +892,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
       return { sum: count ? sum : null, count };
     };
 
+    const isRollingAvg45 = aggFreq === "rolling45_avg";
     const isRollingAvg30 = aggFreq === "rolling30_avg";
     const isRollingAvg14 = aggFreq === "rolling14_avg";
     const isRollingSum30 = aggFreq === "rolling30_sum";
@@ -921,6 +923,34 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
           mom_pct: pm != null ? growthPct(d.value, pm) : null,
         };
       });
+    }
+
+    // ✅ NEW: 45-day rolling avg (simple moving average of last 45 daily points)
+    // YoY compares against the same 45-day window last year (shift by 365 days, consistent with existing rolling logic)
+    if (isRollingAvg45) {
+      const points: DailyChartPoint[] = [];
+      let cur = f;
+      while (cur <= t) {
+        const start = isoMinusDays(cur, 44); // last 45 days inclusive
+        const currSC = sumCountRangeInclusive(start, cur);
+        const currVal = currSC.sum != null && currSC.count ? currSC.sum / currSC.count : 0;
+
+        const curPrevYear = isoMinusDays(cur, 365);
+        const startPrevYear = isoMinusDays(curPrevYear, 44);
+        const prevSC = sumCountRangeInclusive(startPrevYear, curPrevYear);
+        const prevVal = prevSC.sum != null && prevSC.count ? prevSC.sum / prevSC.count : null;
+
+        points.push({
+          label: formatDDMMYYYY(cur),
+          units: currVal,
+          prev_year_units: prevVal,
+          yoy_pct: prevVal != null ? growthPct(currVal, prevVal) : null,
+          mom_pct: null,
+        });
+
+        cur = isoPlusDays(cur, 1);
+      }
+      return points;
     }
 
     // 30-day rolling avg/sum (existing)
@@ -958,7 +988,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
       return points;
     }
 
-    // ✅ NEW: Fortnightly Rolling (AVG) (last 14 days)
+    // ✅ Fortnightly Rolling (AVG) (last 14 days)
     if (isRollingAvg14) {
       const points: DailyChartPoint[] = [];
       let cur = f;
@@ -1406,6 +1436,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
   const periodValueLabel = calcMode === "avg" ? "Avg" : "Total";
   const ytdLabel = calcMode === "avg" ? "YTD Avg (from 1 Apr)" : "YTD Total (from 1 Apr)";
 
+  const rolling45AvgLabel = "Last 45 Days Rolling Avg (YoY Growth)";
   const rollingAvgLabel = "Last 30 Days Rolling Avg (YoY Growth)";
   const rollingSumLabel = "Last 30 Days Rolling Sum (YoY Growth)";
   const fortnightRollingAvgLabel = "Fortnightly Rolling (AVG) (last 14 days)";
@@ -1533,6 +1564,7 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                           onChange={(e) => setAggFreq(e.target.value as ViewAs)}
                           className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
                         >
+                          <option value="rolling45_avg">{rolling45AvgLabel}</option>
                           <option value="rolling30_avg">{rollingAvgLabel}</option>
                           <option value="rolling14_avg">{fortnightRollingAvgLabel}</option>
                           <option value="daily">Daily</option>
@@ -1638,13 +1670,15 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                       </div>
 
                       <div className="mt-2 text-[11px] text-slate-500">
-                        {aggFreq === "rolling30_avg" || aggFreq === "rolling30_sum"
-                          ? "Rolling Avg/Sum uses a 30-day window and compares against the same 30-day window last year."
-                          : aggFreq === "rolling14_avg"
-                            ? "Fortnightly Rolling (AVG) uses a 14-day window and compares against the same 14-day window last year."
-                            : aggFreq === "weekly_roll7_avg"
-                              ? "Weekly Rolling (AVG) uses a 7-day window and compares against the same 7-day window last year."
-                              : null}
+                        {aggFreq === "rolling45_avg"
+                          ? "Last 45 Days Rolling (AVG) uses a 45-day window and compares against the same 45-day window last year."
+                          : aggFreq === "rolling30_avg" || aggFreq === "rolling30_sum"
+                            ? "Rolling Avg/Sum uses a 30-day window and compares against the same 30-day window last year."
+                            : aggFreq === "rolling14_avg"
+                              ? "Fortnightly Rolling (AVG) uses a 14-day window and compares against the same 14-day window last year."
+                              : aggFreq === "weekly_roll7_avg"
+                                ? "Weekly Rolling (AVG) uses a 7-day window and compares against the same 7-day window last year."
+                                : null}
                       </div>
                     </div>
                   </div>
@@ -2194,16 +2228,12 @@ export default function ElectricityDashboard(props: ElectricityDashboardProps) {
                             <td className="px-3 py-2 font-medium text-slate-900">{m.month}</td>
                             <td className="px-3 py-2 text-slate-700">{fmtValue(m.value)}</td>
 
-                            {/* ✅ Conditional formatting for MoM% */}
                             <td className={`px-3 py-2 ${pctColorClass(m.mom_pct)}`}>{fmtPct(m.mom_pct)}</td>
-
-                            {/* ✅ Conditional formatting for YoY% */}
                             <td className={`px-3 py-2 ${pctColorClass(m.yoy_pct)}`}>{fmtPct(m.yoy_pct)}</td>
                           </tr>
                         ))}
                     </tbody>
 
-                    {/* ✅ Peak Demand Met requirement: footer avg of 24 monthly values */}
                     {monthlyFooterAvgForPeakDemand != null ? (
                       <tfoot>
                         <tr className="border-t border-slate-200 bg-slate-50">
