@@ -33,14 +33,12 @@ export default function App() {
             <Tabs>
               <div className="mt-2">
                 <TabList>
-                  {/* 🔁 LABEL CHANGES ONLY */}
                   <Tab>Total</Tab>
                   <Tab>Thermal (incl. Large Hydro)</Tab>
                   <Tab>Renewable</Tab>
                 </TabList>
               </div>
 
-              {/* Total = total */}
               <TabPanel>
                 <ElectricityDashboard
                   type="generation"
@@ -59,7 +57,6 @@ export default function App() {
                 />
               </TabPanel>
 
-              {/* Thermal (incl. Large Hydro) = coal */}
               <TabPanel>
                 <ElectricityDashboard
                   type="generation-coal"
@@ -78,7 +75,6 @@ export default function App() {
                 />
               </TabPanel>
 
-              {/* Renewable = renewable */}
               <TabPanel>
                 <ElectricityDashboard
                   type="generation-renewable"
@@ -163,28 +159,79 @@ export default function App() {
           </TabPanel>
 
           {/* ===========================
-              RTM Prices
+              RTM Prices (WITH SUB-TABS)
               =========================== */}
           <TabPanel>
-            <ElectricityDashboard
-              type="rtm-prices"
-              title="India RTM Prices Dashboard"
-              subtitle="RTM price trends, period averages, and YoY/WoW analytics"
-              seriesLabel="RTM Prices"
-              unitLabel="Rs/Unit"
-              valueColumnKey="rtm_price"
-              defaultCsvPath="/data/RTM Prices.csv"
-              enableAutoFetch={false}
-              calcMode="avg"
-              valueDisplay={{
-                suffix: " Rs/Unit",
-                decimals: 2,
-              }}
-            />
+            <Tabs>
+              <div className="mt-2">
+                <TabList>
+                  <Tab>RTM Prices</Tab>
+                  <Tab>12 Noon</Tab>
+                  <Tab>9 PM</Tab>
+                </TabList>
+              </div>
+
+              {/* DEFAULT RTM (UNCHANGED) */}
+              <TabPanel>
+                <ElectricityDashboard
+                  type="rtm-prices"
+                  title="India RTM Prices Dashboard"
+                  subtitle="RTM price trends, period averages, and YoY/WoW analytics"
+                  seriesLabel="RTM Prices"
+                  unitLabel="Rs/Unit"
+                  valueColumnKey="rtm_price"
+                  defaultCsvPath="/data/RTM Prices.csv"
+                  enableAutoFetch={false}
+                  calcMode="avg"
+                  valueDisplay={{
+                    suffix: " Rs/Unit",
+                    decimals: 2,
+                  }}
+                />
+              </TabPanel>
+
+              {/* 12 NOON */}
+              <TabPanel>
+                <ElectricityDashboard
+                  type="rtm-prices-noon"
+                  title="India RTM Prices Dashboard"
+                  subtitle="RTM 12 Noon price trends, period averages, and YoY/WoW analytics"
+                  seriesLabel="RTM Prices (12 Noon)"
+                  unitLabel="Rs/Unit"
+                  valueColumnKey="Price_12_Noon"
+                  defaultCsvPath="/data/RTM Prices.csv"
+                  enableAutoFetch={false}
+                  calcMode="avg"
+                  valueDisplay={{
+                    suffix: " Rs/Unit",
+                    decimals: 2,
+                  }}
+                />
+              </TabPanel>
+
+              {/* 9 PM */}
+              <TabPanel>
+                <ElectricityDashboard
+                  type="rtm-prices-night"
+                  title="India RTM Prices Dashboard"
+                  subtitle="RTM 9 PM price trends, period averages, and YoY/WoW analytics"
+                  seriesLabel="RTM Prices (9 PM)"
+                  unitLabel="Rs/Unit"
+                  valueColumnKey="Price_9_PM"
+                  defaultCsvPath="/data/RTM Prices.csv"
+                  enableAutoFetch={false}
+                  calcMode="avg"
+                  valueDisplay={{
+                    suffix: " Rs/Unit",
+                    decimals: 2,
+                  }}
+                />
+              </TabPanel>
+            </Tabs>
           </TabPanel>
 
           {/* ===========================
-              DAM Prices (NEW TAB)
+              DAM Prices
               =========================== */}
           <TabPanel>
             <ElectricityDashboard
