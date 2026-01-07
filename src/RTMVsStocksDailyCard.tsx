@@ -13,18 +13,39 @@ import {
 
 type Mode = "price" | "ptb";
 type WindowDays = 7 | 14 | 30 | 45;
+type RangePreset = "1m" | "3m" | "6m" | "12m" | "24m" | "36m" | "ytd" | "all";
 
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+function isISODate(s: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
 function parseISOKey(s: string) {
-  const ok = /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const ok = isISODate(s);
   if (!ok) return null;
   const d = new Date(s + "T00:00:00Z");
   return Number.isNaN(d.getTime()) ? null : s;
 }
 
+/**
+ * ✅ CRITICAL FIX (your “05-Jan shows as 04-Jan” issue):
+ * XLSX returns Date objects in LOCAL timezone. Using toISOString() can shift a date backward.
+ * So for Date objects, we build YYYY-MM-DD from LOCAL calendar components (getFullYear/getMonth/getDate).
+ */
+function dateObjToISODateLocal(d: Date) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+  const yyyy = d.getFullYear();
+  const mm = d.getMonth() + 1;
+  const dd = d.getDate();
+  return `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
+}
+
+// Excel serial date -> ISO (UTC) (XLSX uses 1899-12-30 base)
 function excelSerialToISO(n: number) {
   if (!Number.isFinite(n)) return null;
   const ms = Math.round(n * 86400000);
-  const base = Date.UTC(1899, 11, 30);
+  const base = Date.UTC(1899, 11, 30); // 1899-12-30
   const d = new Date(base + ms);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 10);
@@ -36,8 +57,12 @@ function excelSerialToISO(n: number) {
 // - DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY
 // - ISO YYYY-MM-DD
 function parseInputDate(s: unknown) {
-  if (s instanceof Date && !Number.isNaN(s.getTime())) return s.toISOString().slice(0, 10);
+  // ✅ Date object: DO NOT use toISOString() (timezone shift bug)
+  if (s instanceof Date && !Number.isNaN(s.getTime())) {
+    return dateObjToISODateLocal(s);
+  }
 
+  // ✅ Excel serial (number)
   if (typeof s === "number" && Number.isFinite(s)) {
     if (s > 20000 && s < 80000) return excelSerialToISO(s);
   }
@@ -54,8 +79,7 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime()))
-      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime())) return `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
     return null;
   }
 
@@ -65,8 +89,7 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = 2000 + Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime()))
-      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime())) return `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
     return null;
   }
 
@@ -76,8 +99,7 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime()))
-      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime())) return `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
     return null;
   }
 
@@ -87,12 +109,11 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = 2000 + Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime()))
-      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime())) return `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
     return null;
   }
 
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return parseISOKey(t);
+  if (isISODate(t)) return parseISOKey(t);
   return null;
 }
 
@@ -101,7 +122,6 @@ function isoMinusDays(iso: string, days: number) {
   d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString().slice(0, 10);
 }
-
 function isoPlusDays(iso: string, days: number) {
   const d = new Date(iso + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + days);
@@ -116,9 +136,11 @@ function isoMinusMonths(anchorIso: string, months: number) {
 
   const targetMonthIndex = m - months;
   const targetDate = new Date(Date.UTC(y, targetMonthIndex, 1));
-  const lastDay = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)).getUTCDate();
-  const clampedDay = Math.min(day, lastDay);
+  const lastDay = new Date(
+    Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)
+  ).getUTCDate();
 
+  const clampedDay = Math.min(day, lastDay);
   const out = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), clampedDay));
   return out.toISOString().slice(0, 10);
 }
@@ -130,13 +152,12 @@ function isoStartOfYear(iso: string) {
 }
 
 function formatDDMMYYYY(iso: string) {
-  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "—";
+  if (!iso || typeof iso !== "string" || !isISODate(iso)) return "—";
   const [y, m, d] = iso.split("-");
   return `${d}-${m}-${y}`;
 }
-
 function formatDDMMYY(iso: string) {
-  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  if (!iso || typeof iso !== "string" || !isISODate(iso)) return "";
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y.slice(2)}`;
 }
@@ -146,7 +167,6 @@ function asFiniteNumber(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
-
 function growthPct(curr: number, prev: number) {
   if (!Number.isFinite(curr) || !Number.isFinite(prev) || prev === 0) return null;
   return ((curr - prev) / prev) * 100;
@@ -215,16 +235,17 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
   const buf = await res.arrayBuffer();
   const XLSX = await import("xlsx");
   const wb = XLSX.read(buf, { type: "array", cellDates: true });
-  const sheetNames = wb.SheetNames || [];
 
+  const sheetNames = wb.SheetNames || [];
   const s1 = sheetNames[0];
   const s2 = sheetNames[1];
 
   const out = buildEmptySheets();
 
   function parseSheet(sheetName: string | undefined) {
-    if (!sheetName)
+    if (!sheetName) {
       return { dates: [] as string[], cols: [] as string[], values: new Map(), latestDate: null as string | null };
+    }
 
     const ws = wb.Sheets[sheetName];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
@@ -261,10 +282,11 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
   out.prices = parseSheet(s1);
   out.ptb = parseSheet(s2);
+
   return out;
 }
 
-// STOCK rolling: last N available trading days <= anchor (skips missing dates)
+// STOCK rolling: last N available trading days <= anchor
 function rollingAvgStocks(series: Map<string, number>, anchor: string, n: number) {
   const dates = Array.from(series.keys()).filter((d) => d <= anchor).sort();
   if (!dates.length) return null;
@@ -278,7 +300,7 @@ function rollingAvgStocks(series: Map<string, number>, anchor: string, n: number
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
-// RTM rolling: calendar days window ending at anchor (skips missing values)
+// RTM rolling: calendar days window ending at anchor
 function rollingAvgRtm(series: Map<string, number>, anchor: string, n: number) {
   const start = isoMinusDays(anchor, n - 1);
   let cur = start;
@@ -318,7 +340,7 @@ function Card({
   );
 }
 
-// Different colors for multiple stocks
+// Stock colors (2nd/3rd/etc will differ)
 const STOCK_COLORS = [
   "#2563eb", // blue
   "#9333ea", // purple
@@ -332,8 +354,6 @@ const STOCK_COLORS = [
 function getStockColor(i: number) {
   return STOCK_COLORS[i % STOCK_COLORS.length];
 }
-
-type RangePreset = "1m" | "3m" | "6m" | "12m" | "24m" | "36m" | "ytd" | "all";
 
 export default function RTMVsStocksDailyCard(props: {
   rtmCsvUrl: string;
@@ -351,17 +371,23 @@ export default function RTMVsStocksDailyCard(props: {
   const [showYoY, setShowYoY] = useState(false);
   const [showRtmControlLines, setShowRtmControlLines] = useState(false);
 
-  // Lag control (days) – RTM only
+  // Lag (RTM only)
   const [lagDays, setLagDays] = useState<number>(0);
 
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Presets + manual range
+  // Presets + manual range (text + calendar)
   const [preset, setPreset] = useState<RangePreset>("24m");
-  const [fromInput, setFromInput] = useState<string>("");
-  const [toInput, setToInput] = useState<string>("");
+
+  // ✅ Calendar inputs (ISO so browser date picker works)
+  const [fromISO, setFromISO] = useState<string>("");
+  const [toISO, setToISO] = useState<string>("");
+
+  // ✅ Text inputs (DD/MM/YY)
+  const [fromText, setFromText] = useState<string>("");
+  const [toText, setToText] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -377,15 +403,13 @@ export default function RTMVsStocksDailyCard(props: {
         const rtm = parseRtmCsv(rtmText, rtmValueColumnKey);
 
         const stocks = await loadStockXlsx(`${encodeURI(stockFileUrl)}?v=${Date.now()}`);
-
         if (cancelled) return;
 
         setRtmMap(rtm);
         setStockSheets(stocks);
 
-        // Default: only 1 stock checked
         const cols = stocks.prices.cols.length ? stocks.prices.cols : stocks.ptb.cols;
-        setSelectedStocks(cols.slice(0, Math.min(1, cols.length)));
+        setSelectedStocks(cols.slice(0, Math.min(1, cols.length))); // default 1 stock
 
         setLoading(null);
       } catch (e: any) {
@@ -405,74 +429,91 @@ export default function RTMVsStocksDailyCard(props: {
   const activeSheet = mode === "price" ? stockSheets.prices : stockSheets.ptb;
   const stockUniverse = activeSheet.cols;
 
-  // Stock anchor = latest stock date in active sheet
+  // ✅ Anchor should now correctly show 05-01-2026 (fix is Date object parsing)
   const anchorDate = activeSheet.latestDate;
 
-  // Apply preset -> fill inputs (DD/MM/YY)
+  // Apply preset -> set date range defaults
   useEffect(() => {
     if (!anchorDate) return;
 
-    const toIso = anchorDate;
+    const to = anchorDate;
 
-    let fromIso = isoMinusMonths(anchorDate, 24);
-    if (preset === "1m") fromIso = isoMinusMonths(anchorDate, 1);
-    if (preset === "3m") fromIso = isoMinusMonths(anchorDate, 3);
-    if (preset === "6m") fromIso = isoMinusMonths(anchorDate, 6);
-    if (preset === "12m") fromIso = isoMinusMonths(anchorDate, 12);
-    if (preset === "24m") fromIso = isoMinusMonths(anchorDate, 24);
-    if (preset === "36m") fromIso = isoMinusMonths(anchorDate, 36);
-    if (preset === "ytd") fromIso = isoStartOfYear(anchorDate);
+    let from = isoMinusMonths(anchorDate, 24);
+    if (preset === "1m") from = isoMinusMonths(anchorDate, 1);
+    if (preset === "3m") from = isoMinusMonths(anchorDate, 3);
+    if (preset === "6m") from = isoMinusMonths(anchorDate, 6);
+    if (preset === "12m") from = isoMinusMonths(anchorDate, 12);
+    if (preset === "24m") from = isoMinusMonths(anchorDate, 24);
+    if (preset === "36m") from = isoMinusMonths(anchorDate, 36);
+    if (preset === "ytd") from = isoStartOfYear(anchorDate);
+    if (preset === "all") from = activeSheet.dates.length ? activeSheet.dates[0] : isoMinusMonths(anchorDate, 36);
 
-    if (preset === "all") {
-      const earliest = activeSheet.dates.length ? activeSheet.dates[0] : isoMinusMonths(anchorDate, 36);
-      fromIso = earliest;
-    }
+    setFromISO(from);
+    setToISO(to);
 
-    setToInput(formatDDMMYY(toIso));
-    setFromInput(formatDDMMYY(fromIso));
+    setFromText(formatDDMMYY(from));
+    setToText(formatDDMMYY(to));
   }, [anchorDate, preset, activeSheet.dates]);
+
+  // Keep ISO <-> text in sync when user edits text manually
+  useEffect(() => {
+    const parsed = parseInputDate(fromText);
+    if (parsed && parsed !== fromISO) setFromISO(parsed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromText]);
+  useEffect(() => {
+    const parsed = parseInputDate(toText);
+    if (parsed && parsed !== toISO) setToISO(parsed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toText]);
+
+  // Keep text in sync when user picks calendar
+  useEffect(() => {
+    if (fromISO) setFromText(formatDDMMYY(fromISO));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromISO]);
+  useEffect(() => {
+    if (toISO) setToText(formatDDMMYY(toISO));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toISO]);
 
   const range = useMemo(() => {
     if (!anchorDate) return { fromIso: null as string | null, toIso: null as string | null };
 
-    const parsedTo = parseInputDate(toInput);
-    const parsedFrom = parseInputDate(fromInput);
+    const parsedTo = parseISOKey(toISO) || parseInputDate(toISO) || parseInputDate(toText);
+    const parsedFrom = parseISOKey(fromISO) || parseInputDate(fromISO) || parseInputDate(fromText);
 
     const safeTo = parsedTo && parsedTo <= anchorDate ? parsedTo : anchorDate;
-    const safeFrom = parsedFrom && parsedFrom <= safeTo ? parsedFrom : isoMinusMonths(anchorDate, 24);
+
+    const fallbackFrom = isoMinusMonths(anchorDate, 24);
+    const safeFrom = parsedFrom && parsedFrom <= safeTo ? parsedFrom : fallbackFrom;
 
     return { fromIso: safeFrom, toIso: safeTo };
-  }, [anchorDate, fromInput, toInput]);
+  }, [anchorDate, fromISO, toISO, fromText, toText]);
 
-  // RTM anchor is shifted back by lagDays (clamped)
+  const lagClamped = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
+
   const rtmAnchor = useMemo(() => {
     if (!range.toIso) return null;
-    const lag = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
-    return isoMinusDays(range.toIso, lag);
-  }, [range.toIso, lagDays]);
+    return isoMinusDays(range.toIso, lagClamped);
+  }, [range.toIso, lagClamped]);
 
-  // Chart series:
-  // X-axis is selected date range.
-  // Stocks use chart date.
-  // RTM uses shifted date (chart date - lag).
   const chartData = useMemo(() => {
     if (!range.fromIso || !range.toIso) return [];
     if (!rtmMap.size) return [];
-
-    const lag = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
 
     const points: any[] = [];
     let cur = range.fromIso;
 
     while (cur <= range.toIso) {
-      const rtmDate = lag ? isoMinusDays(cur, lag) : cur;
+      const rtmDate = lagClamped ? isoMinusDays(cur, lagClamped) : cur;
       const rtm = rollingAvgRtm(rtmMap, rtmDate, windowDays);
 
       const row: any = {
         label: formatDDMMYYYY(cur),
         __iso: cur,
-        rtm,
-        __rtmIso: rtmDate
+        __rtmIso: rtmDate,
+        rtm
       };
 
       for (const s of selectedStocks) {
@@ -483,7 +524,7 @@ export default function RTMVsStocksDailyCard(props: {
 
       if (showYoY) {
         const py = isoMinusDays(cur, 365);
-        const rtmPYDate = lag ? isoMinusDays(py, lag) : py;
+        const rtmPYDate = lagClamped ? isoMinusDays(py, lagClamped) : py;
 
         const rtmPY = rollingAvgRtm(rtmMap, rtmPYDate, windowDays);
         row.rtm_yoy = rtm != null && rtmPY != null ? growthPct(rtm, rtmPY) : null;
@@ -491,7 +532,7 @@ export default function RTMVsStocksDailyCard(props: {
         for (const s of selectedStocks) {
           const series = activeSheet.values.get(s);
           if (!series) continue;
-          const v = row[s] as number | null;
+          const v = asFiniteNumber(row[s]);
           const vPY = rollingAvgStocks(series, py, windowDays);
           row[`${s}_yoy`] = v != null && vPY != null ? growthPct(v, vPY) : null;
         }
@@ -502,9 +543,8 @@ export default function RTMVsStocksDailyCard(props: {
     }
 
     return points;
-  }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY, lagDays]);
+  }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY, lagClamped]);
 
-  // RTM control lines computed on *visible* RTM series
   const rtmControl = useMemo(() => {
     const vals = chartData
       .map((r) => asFiniteNumber(r?.rtm))
@@ -512,14 +552,12 @@ export default function RTMVsStocksDailyCard(props: {
     if (!vals.length) return null;
 
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const variance =
-      vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (vals.length - 1) : 0;
+    const variance = vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (vals.length - 1) : 0;
     const sd = Math.sqrt(Math.max(0, variance));
 
     return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
   }, [chartData]);
 
-  // Quick stats (latest point in visible range)
   const quickStats = useMemo(() => {
     if (!chartData.length) return null;
     const last = chartData[chartData.length - 1];
@@ -546,12 +584,10 @@ export default function RTMVsStocksDailyCard(props: {
     if (x == null || Number.isNaN(x)) return "—";
     return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(x);
   };
-
   const fmtNum = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
     return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(x);
   };
-
   const fmtPct = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
     const sign = x > 0 ? "+" : "";
@@ -565,11 +601,23 @@ export default function RTMVsStocksDailyCard(props: {
     </div>
   ) : null;
 
-  // ✅ CONTROL LINES: dotted + bolder (as requested)
-  const CONTROL_STROKE_WIDTH = 3.6;
-  const CONTROL_DASH = "3 4"; // dotted (like earlier)
+  // Control line styles (dotted + bolder + requested colors)
+  const CONTROL_STROKE_WIDTH = 2.8;
+  const CONTROL_DASH = "3 4"; // dotted look
 
-  const lagClamped = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
+  // ✅ “no-zero compression” domains for both axes
+  const paddedDomain = [
+    (dataMin: number) => {
+      if (!Number.isFinite(dataMin)) return 0;
+      const pad = Math.abs(dataMin) * 0.05;
+      return dataMin - pad;
+    },
+    (dataMax: number) => {
+      if (!Number.isFinite(dataMax)) return 0;
+      const pad = Math.abs(dataMax) * 0.05;
+      return dataMax + pad;
+    }
+  ] as any;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -627,7 +675,6 @@ export default function RTMVsStocksDailyCard(props: {
                           </div>
                         </div>
 
-                        {/* Lag input */}
                         <div>
                           <div className="text-xs font-medium text-slate-600">Lag (days)</div>
                           <input
@@ -637,28 +684,21 @@ export default function RTMVsStocksDailyCard(props: {
                             step={1}
                             value={lagClamped}
                             onChange={(e) => {
-                              const raw = e.target.value;
-                              const n = Math.floor(Number(raw));
-                              if (!Number.isFinite(n)) {
-                                setLagDays(0);
-                                return;
-                              }
-                              setLagDays(Math.max(0, Math.min(365, n)));
+                              const n = Math.floor(Number(e.target.value));
+                              setLagDays(Number.isFinite(n) ? Math.max(0, Math.min(365, n)) : 0);
                             }}
                             className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
                           />
                           <div className="mt-1 text-[11px] text-slate-500">
                             RTM anchors to{" "}
-                            <span className="font-semibold">
-                              {range.toIso ? formatDDMMYYYY(rtmAnchor || range.toIso) : "—"}
-                            </span>{" "}
-                            (To − {lagClamped}d). Stocks anchor to To date.
+                            <span className="font-semibold">{rtmAnchor ? formatDDMMYYYY(rtmAnchor) : "—"}</span> (To − {lagClamped}d). Stocks anchor to To date.
                           </div>
                         </div>
                       </div>
 
+                      {/* Range */}
                       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        <div className="sm:col-span-1">
+                        <div>
                           <div className="text-xs font-medium text-slate-600">Preset range</div>
                           <select
                             value={preset}
@@ -676,27 +716,46 @@ export default function RTMVsStocksDailyCard(props: {
                           </select>
                         </div>
 
+                        {/* ✅ Calendar + text (From) */}
                         <div>
                           <div className="text-xs font-medium text-slate-600">From (DD/MM/YY)</div>
-                          <input
-                            value={fromInput}
-                            onChange={(e) => setFromInput(e.target.value)}
-                            placeholder="DD/MM/YY"
-                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                          />
+                          <div className="mt-1 grid grid-cols-2 gap-2">
+                            <input
+                              type="date"
+                              value={fromISO || ""}
+                              onChange={(e) => setFromISO(e.target.value)}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                            />
+                            <input
+                              value={fromText}
+                              onChange={(e) => setFromText(e.target.value)}
+                              placeholder="DD/MM/YY"
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                            />
+                          </div>
                         </div>
 
+                        {/* ✅ Calendar + text (To) */}
                         <div>
                           <div className="text-xs font-medium text-slate-600">To (DD/MM/YY)</div>
-                          <input
-                            value={toInput}
-                            onChange={(e) => setToInput(e.target.value)}
-                            placeholder="DD/MM/YY"
-                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                          />
+                          <div className="mt-1 grid grid-cols-2 gap-2">
+                            <input
+                              type="date"
+                              value={toISO || ""}
+                              onChange={(e) => setToISO(e.target.value)}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                            />
+                            <input
+                              value={toText}
+                              onChange={(e) => setToText(e.target.value)}
+                              placeholder="DD/MM/YY"
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                            />
+                          </div>
                         </div>
                       </div>
 
+                      {/* Toggles */}
                       <div className="mt-3 flex flex-wrap items-center gap-4">
                         <label className="flex items-center gap-2 text-sm text-slate-700">
                           <input
@@ -719,8 +778,7 @@ export default function RTMVsStocksDailyCard(props: {
                         </label>
 
                         <div className="text-xs text-slate-500">
-                          Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days,
-                          lagged by {lagClamped} days.
+                          Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days, lagged by {lagClamped} days.
                         </div>
                       </div>
 
@@ -773,10 +831,11 @@ export default function RTMVsStocksDailyCard(props: {
                       ) : null}
                     </div>
 
-                    {/* Stock multi-select */}
+                    {/* Stocks */}
                     <div className="lg:w-[360px] lg:shrink-0">
                       <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
                         <div className="text-xs font-semibold text-slate-700">Stocks</div>
+
                         <div className="mt-2 max-h-[220px] overflow-auto rounded-xl bg-white ring-1 ring-slate-200">
                           {stockUniverse.length ? (
                             <div className="grid grid-cols-1 gap-2 p-2 text-[12px] text-slate-700">
@@ -848,21 +907,10 @@ export default function RTMVsStocksDailyCard(props: {
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
-                        domain={[
-                          (dataMin: number) => {
-                            if (!Number.isFinite(dataMin)) return 0;
-                            const pad = Math.abs(dataMin) * 0.05;
-                            return dataMin - pad;
-                          },
-                          (dataMax: number) => {
-                            if (!Number.isFinite(dataMax)) return 0;
-                            const pad = Math.abs(dataMax) * 0.05;
-                            return dataMax + pad;
-                          }
-                        ]}
+                        domain={paddedDomain}
                       />
 
-                      {/* Right axis: stocks */}
+                      {/* Right axis: stocks (no-zero compression) */}
                       <YAxis
                         yAxisId="right"
                         orientation="right"
@@ -870,18 +918,7 @@ export default function RTMVsStocksDailyCard(props: {
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtNum(asFiniteNumber(v))}
-                        domain={[
-                          (dataMin: number) => {
-                            if (!Number.isFinite(dataMin)) return 0;
-                            const pad = Math.abs(dataMin) * 0.05;
-                            return dataMin - pad;
-                          },
-                          (dataMax: number) => {
-                            if (!Number.isFinite(dataMax)) return 0;
-                            const pad = Math.abs(dataMax) * 0.05;
-                            return dataMax + pad;
-                          }
-                        ]}
+                        domain={paddedDomain}
                       />
 
                       <Tooltip
@@ -909,7 +946,7 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* RTM control lines (DOTTED + BOLD) */}
+                      {/* RTM control lines (dotted + bold + requested colors) */}
                       {showRtmControlLines && rtmControl ? (
                         <>
                           <ReferenceLine
@@ -929,7 +966,7 @@ export default function RTMVsStocksDailyCard(props: {
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p1}
-                            stroke="#f97316"
+                            stroke="#f97316" // +1σ orange
                             strokeWidth={CONTROL_STROKE_WIDTH}
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
@@ -943,7 +980,7 @@ export default function RTMVsStocksDailyCard(props: {
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p2}
-                            stroke="#16a34a"
+                            stroke="#16a34a" // +2σ green
                             strokeWidth={CONTROL_STROKE_WIDTH}
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
@@ -957,7 +994,7 @@ export default function RTMVsStocksDailyCard(props: {
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m1}
-                            stroke="#b45309"
+                            stroke="#b45309" // -1σ dark yellow
                             strokeWidth={CONTROL_STROKE_WIDTH}
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
@@ -971,7 +1008,7 @@ export default function RTMVsStocksDailyCard(props: {
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m2}
-                            stroke="#7c3aed"
+                            stroke="#7c3aed" // -2σ violet
                             strokeWidth={CONTROL_STROKE_WIDTH}
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
@@ -997,7 +1034,7 @@ export default function RTMVsStocksDailyCard(props: {
                         connectNulls
                       />
 
-                      {/* Stock lines */}
+                      {/* Stock lines (auto different colors) */}
                       {selectedStocks.map((s, i) => (
                         <Line
                           key={s}
@@ -1031,9 +1068,8 @@ export default function RTMVsStocksDailyCard(props: {
 
                 <div className="mt-2 text-[11px] text-slate-500">
                   Stocks are computed on chart date range ending at{" "}
-                  <span className="font-semibold">{range.toIso ? formatDDMMYYYY(range.toIso) : "—"}</span>. RTM is
-                  computed using a lagged anchor (To − {lagClamped}d) ending at{" "}
-                  <span className="font-semibold">{rtmAnchor ? formatDDMMYYYY(rtmAnchor) : "—"}</span>.
+                  <span className="font-semibold">{range.toIso ? formatDDMMYYYY(range.toIso) : "—"}</span>. RTM is computed using a lagged anchor (To −{" "}
+                  {lagClamped}d) ending at <span className="font-semibold">{rtmAnchor ? formatDDMMYYYY(rtmAnchor) : "—"}</span>.
                 </div>
               </>
             )}
