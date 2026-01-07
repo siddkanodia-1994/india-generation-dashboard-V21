@@ -20,9 +20,31 @@ function parseISOKey(s: string) {
   return Number.isNaN(d.getTime()) ? null : s;
 }
 
-// Accepts DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY, ISO YYYY-MM-DD
+// ✅ Excel serial number -> YYYY-MM-DD (UTC-safe)
+function excelSerialToISO(n: number) {
+  if (!Number.isFinite(n)) return null;
+
+  // Excel day 1 = 1899-12-31 (with Excel's 1900 leap-year bug baked in at 60)
+  // Using the common 25569 offset approach (1970-01-01 is 25569 in Excel)
+  const ms = Math.round((n - 25569) * 86400 * 1000);
+  const d = new Date(ms);
+
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+// Accepts:
+// - Excel serial numbers (most common in xlsx date columns)
+// - Excel Date objects (if cellDates:true)
+// - DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY
+// - ISO YYYY-MM-DD
 function parseInputDate(s: unknown) {
-  // ✅ NEW: accept Excel Date objects coming from XLSX (raw:true)
+  // ✅ NEW: Excel serial date numbers
+  if (typeof s === "number" && Number.isFinite(s)) {
+    return excelSerialToISO(s);
+  }
+
+  // ✅ Excel / JS Date objects
   if (s instanceof Date && !Number.isNaN(s.getTime())) {
     return s.toISOString().slice(0, 10); // YYYY-MM-DD
   }
@@ -38,7 +60,8 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime())) return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime()))
+      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
     return null;
   }
 
@@ -48,7 +71,8 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = 2000 + Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime())) return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime()))
+      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
     return null;
   }
 
@@ -58,7 +82,8 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime())) return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime()))
+      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
     return null;
   }
 
@@ -68,7 +93,8 @@ function parseInputDate(s: unknown) {
     const mm = Number(m[2]);
     const yyyy = 2000 + Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    if (!Number.isNaN(d.getTime())) return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    if (!Number.isNaN(d.getTime()))
+      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
     return null;
   }
 
@@ -183,7 +209,8 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
   const buf = await res.arrayBuffer();
   const XLSX = await import("xlsx");
 
-  const wb = XLSX.read(buf, { type: "array" });
+  // ✅ IMPORTANT: cellDates:true lets XLSX interpret Excel date cells as Date objects when possible
+  const wb = XLSX.read(buf, { type: "array", cellDates: true });
   const sheetNames = wb.SheetNames || [];
 
   const s1 = sheetNames[0];
@@ -192,10 +219,18 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
   const out = buildEmptySheets();
 
   function parseSheet(sheetName: string | undefined) {
-    if (!sheetName) return { dates: [] as string[], cols: [] as string[], values: new Map<string, Map<string, number>>(), latestDate: null as string | null };
+    if (!sheetName)
+      return {
+        dates: [] as string[],
+        cols: [] as string[],
+        values: new Map<string, Map<string, number>>(),
+        latestDate: null as string | null
+      };
 
     const ws = wb.Sheets[sheetName];
-    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
+
+    // ✅ Keep raw values (numbers, Dates) so our parser can handle both
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, cellDates: true }) as any[][];
     if (!aoa || aoa.length < 2) return { dates: [], cols: [], values: new Map(), latestDate: null };
 
     const header = (aoa[0] || []).map((x) => String(x ?? "").trim());
@@ -314,7 +349,7 @@ export default function RTMVsStocksDailyCard(props: {
   const [loading, setLoading] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Load RTM CSV
+  // Load RTM CSV + stock xlsx
   useEffect(() => {
     let cancelled = false;
     async function run() {
@@ -443,7 +478,7 @@ export default function RTMVsStocksDailyCard(props: {
               <div className="text-sm text-slate-600">No stock data found (check stock.xlsx sheets & date column).</div>
             ) : (
               <>
-                {/* Controls (kept compact, same Tailwind style family as existing UI) */}
+                {/* Controls */}
                 <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
                     <div className="flex-1">
@@ -572,7 +607,6 @@ export default function RTMVsStocksDailyCard(props: {
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
 
-                      {/* Left axis: RTM Rs/Unit */}
                       <YAxis
                         yAxisId="left"
                         width={92}
@@ -581,7 +615,6 @@ export default function RTMVsStocksDailyCard(props: {
                         tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
                       />
 
-                      {/* Right axis: stocks (price or P/B) */}
                       <YAxis
                         yAxisId="right"
                         orientation="right"
@@ -595,7 +628,6 @@ export default function RTMVsStocksDailyCard(props: {
                         wrapperStyle={{ outline: "none" }}
                         formatter={(v: any, name: any, item: any) => {
                           const key = (item && (item.dataKey as string)) || (name as string);
-
                           const num = asFiniteNumber(v);
 
                           if (key === "rtm") return [`${fmtRtm(num)} Rs/Unit`, "RTM (rolling avg)"];
@@ -606,7 +638,6 @@ export default function RTMVsStocksDailyCard(props: {
                             return [fmtPct(num), `${base} YoY %`];
                           }
 
-                          // Stock series
                           if (selectedStocks.includes(key)) {
                             return [fmtNum(num), mode === "price" ? `${key} (Price)` : `${key} (P/B)`];
                           }
@@ -618,7 +649,6 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* RTM line */}
                       <Line
                         yAxisId="left"
                         type="monotone"
@@ -630,7 +660,6 @@ export default function RTMVsStocksDailyCard(props: {
                         connectNulls
                       />
 
-                      {/* Stock lines */}
                       {selectedStocks.map((s) => (
                         <Line
                           key={s}
@@ -645,7 +674,6 @@ export default function RTMVsStocksDailyCard(props: {
                         />
                       ))}
 
-                      {/* YoY lines (optional) */}
                       {showYoY ? (
                         <Line
                           yAxisId="right"
