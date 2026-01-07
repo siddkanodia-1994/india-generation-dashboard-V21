@@ -22,6 +22,11 @@ function parseISOKey(s: string) {
 
 // Accepts DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY, ISO YYYY-MM-DD
 function parseInputDate(s: unknown) {
+  // ✅ NEW: accept Excel Date objects coming from XLSX (raw:true)
+  if (s instanceof Date && !Number.isNaN(s.getTime())) {
+    return s.toISOString().slice(0, 10); // YYYY-MM-DD
+  }
+
   if (typeof s !== "string") return null;
   const t = s.trim();
 
