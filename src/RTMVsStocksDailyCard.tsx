@@ -36,13 +36,16 @@ function excelSerialToISO(n: number) {
   return d.toISOString().slice(0, 10);
 }
 
-// ✅ Critical fix for T-1 bug:
-// If XLSX gives a Date object, NEVER do toISOString() (it shifts day in IST).
-// Convert using LOCAL calendar fields.
+// ✅ FIXED (timezone-proof): Excel Date object -> ISO
+// Strategy: shift by +12h then take UTC date parts (prevents T-1 in any timezone)
 function dateObjToLocalISO(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = d.getMonth() + 1;
-  const dd = d.getDate();
+  const ms = d.getTime();
+  if (!Number.isFinite(ms)) return null;
+
+  const d2 = new Date(ms + 12 * 60 * 60 * 1000); // +12h
+  const yyyy = d2.getUTCFullYear();
+  const mm = d2.getUTCMonth() + 1;
+  const dd = d2.getUTCDate();
   return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
 }
 
@@ -266,7 +269,7 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
     for (let r = 1; r < aoa.length; r++) {
       const row = aoa[r] || [];
-      const d = parseInputDate(row[0]); // ✅ Date objects handled safely (no T-1)
+      const d = parseInputDate(row[0]); // ✅ FIXED date parsing
       if (!d) continue;
 
       let any = false;
@@ -706,7 +709,6 @@ export default function RTMVsStocksDailyCard(props: {
                           </select>
                         </div>
 
-                        {/* ✅ FIX: native date input so calendar dropdown works */}
                         <div>
                           <div className="text-xs font-medium text-slate-600">From</div>
                           <input
@@ -760,7 +762,6 @@ export default function RTMVsStocksDailyCard(props: {
                         </div>
                       </div>
 
-                      {/* Quick stats */}
                       {quickStats ? (
                         <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-slate-200">
                           <div className="text-xs font-semibold text-slate-700">Quick stats (latest in range)</div>
@@ -809,7 +810,6 @@ export default function RTMVsStocksDailyCard(props: {
                       ) : null}
                     </div>
 
-                    {/* Stock multi-select */}
                     <div className="lg:w-[360px] lg:shrink-0">
                       <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
                         <div className="text-xs font-semibold text-slate-700">Stocks</div>
@@ -870,7 +870,6 @@ export default function RTMVsStocksDailyCard(props: {
                   </div>
                 </div>
 
-                {/* Chart */}
                 <div className="h-[380px] sm:h-[480px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 12, right: 42, bottom: 12, left: 42 }}>
@@ -947,7 +946,6 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* ✅ RTM control lines as dotted ReferenceLines */}
                       {showRtmControlLines && rtmControl ? (
                         <>
                           <ReferenceLine
