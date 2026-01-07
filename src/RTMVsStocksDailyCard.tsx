@@ -41,8 +41,7 @@ function parseInputDate(s: unknown) {
   const t = s.trim();
   if (!t) return null;
 
-  let m: RegExpMatchArray | null;
-
+  let m: RegExpMatchArray | null; // DD/MM/YYYY
   m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) {
     const dd = Number(m[1]);
@@ -54,6 +53,7 @@ function parseInputDate(s: unknown) {
     return null;
   }
 
+  // DD/MM/YY
   m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
   if (m) {
     const dd = Number(m[1]);
@@ -65,6 +65,7 @@ function parseInputDate(s: unknown) {
     return null;
   }
 
+  // DD-MM-YYYY
   m = t.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
   if (m) {
     const dd = Number(m[1]);
@@ -76,6 +77,7 @@ function parseInputDate(s: unknown) {
     return null;
   }
 
+  // DD-MM-YY
   m = t.match(/^(\d{1,2})-(\d{1,2})-(\d{2})$/);
   if (m) {
     const dd = Number(m[1]);
@@ -305,6 +307,23 @@ function Card({
   );
 }
 
+// ✅ Different colors for multiple stocks (2nd/3rd/4th...)
+// (kept as fixed, readable palette)
+const STOCK_COLORS = [
+  "#2563eb", // blue
+  "#9333ea", // purple
+  "#0f766e", // teal
+  "#f59e0b", // amber
+  "#ef4444", // red
+  "#16a34a", // green
+  "#db2777", // pink
+  "#475569" // slate
+];
+
+function getStockColor(i: number) {
+  return STOCK_COLORS[i % STOCK_COLORS.length];
+}
+
 export default function RTMVsStocksDailyCard(props: {
   rtmCsvUrl: string;
   stockFileUrl: string;
@@ -319,7 +338,6 @@ export default function RTMVsStocksDailyCard(props: {
   const [windowDays, setWindowDays] = useState<WindowDays>(45);
   const [showYoY, setShowYoY] = useState(false);
 
-  // Control lines toggle
   const [showRtmControlLines, setShowRtmControlLines] = useState(false);
 
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
@@ -374,10 +392,8 @@ export default function RTMVsStocksDailyCard(props: {
 
   useEffect(() => {
     if (!anchorDate) return;
-
     const toIso = anchorDate;
     const fromIso = isoMinusMonths(anchorDate, presetMonths);
-
     setToInput(formatDDMMYY(toIso));
     setFromInput(formatDDMMYY(fromIso));
   }, [anchorDate, presetMonths]);
@@ -439,7 +455,6 @@ export default function RTMVsStocksDailyCard(props: {
     return points;
   }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY]);
 
-  // RTM control lines: mean ± 1σ, ±2σ on visible range
   const rtmControl = useMemo(() => {
     const vals = chartData
       .map((r) => asFiniteNumber(r?.rtm))
@@ -448,18 +463,10 @@ export default function RTMVsStocksDailyCard(props: {
     if (!vals.length) return null;
 
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const variance =
-      vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / (vals.length - 1) : 0;
+    const variance = vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (vals.length - 1) : 0;
     const sd = Math.sqrt(Math.max(0, variance));
 
-    return {
-      mean,
-      sd,
-      p1: mean + sd,
-      p2: mean + 2 * sd,
-      m1: mean - sd,
-      m2: mean - 2 * sd
-    };
+    return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
   }, [chartData]);
 
   const fmtRtm = (x: number | null | undefined) => {
@@ -484,6 +491,10 @@ export default function RTMVsStocksDailyCard(props: {
       <span className="font-semibold tabular-nums">{formatDDMMYYYY(anchorDate)}</span>
     </div>
   ) : null;
+
+  // ✅ Make control lines bolder & easier to see
+  const CONTROL_STROKE_WIDTH = 2.6;
+  const CONTROL_DASH = "3 4";
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -597,9 +608,7 @@ export default function RTMVsStocksDailyCard(props: {
                             onChange={(e) => setShowRtmControlLines(e.target.checked)}
                             className="h-4 w-4 rounded border-slate-300"
                           />
-                          <span className="font-medium">
-                            Show RTM control lines (Mean, ±1σ, ±2σ)
-                          </span>
+                          <span className="font-medium">Show RTM control lines (Mean, ±1σ, ±2σ)</span>
                         </label>
                       </div>
                     </div>
@@ -675,7 +684,10 @@ export default function RTMVsStocksDailyCard(props: {
                         width={92}
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
-                        tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
+                        tickFormatter={(v) => {
+                          const n = asFiniteNumber(v);
+                          return n == null ? "—" : new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n);
+                        }}
                         domain={[
                           (dataMin: number) => {
                             if (!Number.isFinite(dataMin)) return 0;
@@ -736,15 +748,15 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* Colored control lines */}
+                      {/* ✅ BOLDER control lines */}
                       {showRtmControlLines && rtmControl ? (
                         <>
-                          {/* Mean = black */}
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.mean}
                             stroke="#000000"
-                            strokeDasharray="6 6"
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `Mean (${fmtRtm(rtmControl.mean)})`,
@@ -754,12 +766,12 @@ export default function RTMVsStocksDailyCard(props: {
                             }}
                           />
 
-                          {/* +1SD = orange */}
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p1}
                             stroke="#f97316"
-                            strokeDasharray="4 6"
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `+1σ (${fmtRtm(rtmControl.p1)})`,
@@ -769,12 +781,12 @@ export default function RTMVsStocksDailyCard(props: {
                             }}
                           />
 
-                          {/* +2SD = green */}
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p2}
                             stroke="#16a34a"
-                            strokeDasharray="4 6"
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `+2σ (${fmtRtm(rtmControl.p2)})`,
@@ -784,12 +796,12 @@ export default function RTMVsStocksDailyCard(props: {
                             }}
                           />
 
-                          {/* -1SD = dark yellow */}
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m1}
                             stroke="#b45309"
-                            strokeDasharray="4 6"
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `-1σ (${fmtRtm(rtmControl.m1)})`,
@@ -799,12 +811,12 @@ export default function RTMVsStocksDailyCard(props: {
                             }}
                           />
 
-                          {/* -2SD = violet */}
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m2}
                             stroke="#7c3aed"
-                            strokeDasharray="4 6"
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `-2σ (${fmtRtm(rtmControl.m2)})`,
@@ -816,6 +828,7 @@ export default function RTMVsStocksDailyCard(props: {
                         </>
                       ) : null}
 
+                      {/* RTM */}
                       <Line
                         yAxisId="left"
                         type="monotone"
@@ -827,7 +840,8 @@ export default function RTMVsStocksDailyCard(props: {
                         connectNulls
                       />
 
-                      {selectedStocks.map((s) => (
+                      {/* ✅ Stock colors vary by index */}
+                      {selectedStocks.map((s, i) => (
                         <Line
                           key={s}
                           yAxisId="right"
@@ -836,7 +850,7 @@ export default function RTMVsStocksDailyCard(props: {
                           name={mode === "price" ? `${s} (Price)` : `${s} (P/B)`}
                           dot={false}
                           strokeWidth={2}
-                          stroke="#2563eb"
+                          stroke={getStockColor(i)}
                           connectNulls
                         />
                       ))}
