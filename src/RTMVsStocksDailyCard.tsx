@@ -20,18 +20,40 @@ function parseISOKey(s: string) {
   return Number.isNaN(d.getTime()) ? null : s;
 }
 
+// Excel serial date -> ISO (UTC) (Excel day 1 = 1899-12-31; XLSX uses 1899-12-30 base)
+function excelSerialToISO(n: number) {
+  if (!Number.isFinite(n)) return null;
+  // Handle fractional days too
+  const ms = Math.round(n * 86400000);
+  const base = Date.UTC(1899, 11, 30); // 1899-12-30
+  const d = new Date(base + ms);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
 // Accepts:
-// - Excel Date objects (XLSX raw:true)
+// - Excel Date objects (XLSX cellDates:true)
+// - Excel serial numbers (raw dates)
 // - DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY
 // - ISO YYYY-MM-DD
 function parseInputDate(s: unknown) {
-  // ✅ accept Excel Date objects coming from XLSX (raw:true)
+  // ✅ Date object
   if (s instanceof Date && !Number.isNaN(s.getTime())) {
-    return s.toISOString().slice(0, 10); // YYYY-MM-DD
+    return s.toISOString().slice(0, 10);
+  }
+
+  // ✅ Excel serial (number)
+  if (typeof s === "number" && Number.isFinite(s)) {
+    // Heuristic: treat typical Excel serials as dates
+    // (works for normal datasets; ignores tiny numbers)
+    if (s > 20000 && s < 80000) {
+      return excelSerialToISO(s);
+    }
   }
 
   if (typeof s !== "string") return null;
   const t = s.trim();
+  if (!t) return null;
 
   let m: RegExpMatchArray | null;
 
@@ -100,14 +122,14 @@ function isoPlusDays(iso: string, days: number) {
 function isoMinusMonths(anchorIso: string, months: number) {
   const d = new Date(anchorIso + "T00:00:00Z");
   const y = d.getUTCFullYear();
-  const m = d.getUTCMonth(); // 0-11
+  const m = d.getUTCMonth();
   const day = d.getUTCDate();
 
-  // Move months back
   const targetMonthIndex = m - months;
   const targetDate = new Date(Date.UTC(y, targetMonthIndex, 1));
-  // clamp day to last day of target month
-  const lastDay = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)).getUTCDate();
+  const lastDay = new Date(
+    Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)
+  ).getUTCDate();
   const clampedDay = Math.min(day, lastDay);
 
   const out = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), clampedDay));
@@ -137,11 +159,6 @@ function growthPct(curr: number, prev: number) {
   return ((curr - prev) / prev) * 100;
 }
 
-/** Minimal CSV parse:
- * - Reads header
- * - Uses valueColumnKey to locate the value column
- * - date in col0
- */
 function normalizeKey(s: string) {
   return (s || "")
     .trim()
@@ -198,11 +215,6 @@ function buildEmptySheets(): StockSheets {
   };
 }
 
-/** XLSX loader:
- * - Sheet 1 => Prices
- * - Sheet 2 => PriceToBook
- * - Each sheet: rows = dates, columns = stocks (first row header)
- */
 async function loadStockXlsx(url: string): Promise<StockSheets> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Stock file HTTP ${res.status}`);
@@ -210,7 +222,8 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
   const buf = await res.arrayBuffer();
   const XLSX = await import("xlsx");
 
-  const wb = XLSX.read(buf, { type: "array" });
+  // ✅ IMPORTANT: cellDates:true helps when the sheet stores true dates
+  const wb = XLSX.read(buf, { type: "array", cellDates: true });
   const sheetNames = wb.SheetNames || [];
 
   const s1 = sheetNames[0];
@@ -228,6 +241,8 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
       };
 
     const ws = wb.Sheets[sheetName];
+
+    // header:1 => array-of-arrays, raw:true so we can detect serial numbers
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
     if (!aoa || aoa.length < 2) return { dates: [], cols: [], values: new Map(), latestDate: null };
 
@@ -241,7 +256,7 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
     for (let r = 1; r < aoa.length; r++) {
       const row = aoa[r] || [];
-      const d = parseInputDate(row[0]);
+      const d = parseInputDate(row[0]); // ✅ now supports Date + serial + strings
       if (!d) continue;
 
       let any = false;
@@ -267,9 +282,6 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
   return out;
 }
 
-/** Rolling average for STOCKS:
- * - Uses last N available dates <= anchor that have values (skips holidays/weekends)
- */
 function rollingAvgStocks(series: Map<string, number>, anchor: string, n: number) {
   const dates = Array.from(series.keys()).filter((d) => d <= anchor).sort();
   if (!dates.length) return null;
@@ -283,10 +295,6 @@ function rollingAvgStocks(series: Map<string, number>, anchor: string, n: number
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
-/** Rolling average for RTM:
- * - Calendar days window ending at anchor
- * - Uses actual RTM values on those dates
- */
 function rollingAvgRtm(series: Map<string, number>, anchor: string, n: number) {
   const start = isoMinusDays(anchor, n - 1);
   let cur = start;
@@ -336,23 +344,19 @@ export default function RTMVsStocksDailyCard(props: {
   const [rtmMap, setRtmMap] = useState<Map<string, number>>(new Map());
   const [stockSheets, setStockSheets] = useState<StockSheets>(buildEmptySheets());
 
-  // ✅ Defaults per your ask
-  const [mode, setMode] = useState<Mode>("price"); // Stock Price default
-  const [windowDays, setWindowDays] = useState<WindowDays>(45); // 45 days default
-  const [showYoY, setShowYoY] = useState(false); // unchecked by default
+  // ✅ Defaults you requested
+  const [mode, setMode] = useState<Mode>("price");
+  const [windowDays, setWindowDays] = useState<WindowDays>(45);
+  const [showYoY, setShowYoY] = useState(false);
 
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Date range preset (default 24 months)
   const [presetMonths, setPresetMonths] = useState<1 | 3 | 6 | 12 | 24 | 36>(24);
-
-  // From/To input strings in DD/MM/YY
   const [fromInput, setFromInput] = useState<string>("");
   const [toInput, setToInput] = useState<string>("");
 
-  // Load RTM CSV + Stocks XLSX
   useEffect(() => {
     let cancelled = false;
 
@@ -394,11 +398,8 @@ export default function RTMVsStocksDailyCard(props: {
 
   const activeSheet = mode === "price" ? stockSheets.prices : stockSheets.ptb;
   const stockUniverse = activeSheet.cols;
-
-  // Anchor/end date = latest available date from ACTIVE stock sheet
   const anchorDate = activeSheet.latestDate;
 
-  // ✅ Apply default preset range once anchor exists (and keep inputs in sync)
   useEffect(() => {
     if (!anchorDate) return;
 
@@ -407,10 +408,8 @@ export default function RTMVsStocksDailyCard(props: {
 
     setToInput(formatDDMMYY(toIso));
     setFromInput(formatDDMMYY(fromIso));
-    // only run when anchorDate first becomes available OR preset changes
   }, [anchorDate, presetMonths]);
 
-  // Parse From/To ISO from inputs (fallback to preset if invalid)
   const range = useMemo(() => {
     if (!anchorDate) return { fromIso: null as string | null, toIso: null as string | null };
 
@@ -425,7 +424,6 @@ export default function RTMVsStocksDailyCard(props: {
     return { fromIso: safeFrom, toIso: safeTo };
   }, [anchorDate, fromInput, toInput, presetMonths]);
 
-  // Build chart points: from range.fromIso to range.toIso (inclusive)
   const chartData = useMemo(() => {
     if (!range.fromIso || !range.toIso) return [];
     if (!rtmMap.size) return [];
@@ -442,17 +440,14 @@ export default function RTMVsStocksDailyCard(props: {
         rtm
       };
 
-      // Stocks: last N available trading days ending on cur
       for (const s of selectedStocks) {
         const series = activeSheet.values.get(s);
         if (!series) continue;
         row[s] = rollingAvgStocks(series, cur, windowDays);
       }
 
-      // YoY (optional)
       if (showYoY) {
         const py = isoMinusDays(cur, 365);
-
         const rtmPY = rollingAvgRtm(rtmMap, py, windowDays);
         row.rtm_yoy = rtm != null && rtmPY != null ? growthPct(rtm, rtmPY) : null;
 
@@ -474,18 +469,12 @@ export default function RTMVsStocksDailyCard(props: {
 
   const fmtRtm = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
-    return new Intl.NumberFormat("en-IN", {
-      maximumFractionDigits: 2,
-      minimumFractionDigits: 2
-    }).format(x);
+    return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(x);
   };
 
   const fmtNum = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
-    return new Intl.NumberFormat("en-IN", {
-      maximumFractionDigits: 2,
-      minimumFractionDigits: 2
-    }).format(x);
+    return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(x);
   };
 
   const fmtPct = (x: number | null | undefined) => {
@@ -509,16 +498,13 @@ export default function RTMVsStocksDailyCard(props: {
             {loading ? (
               <div className="text-sm text-slate-600">{loading}</div>
             ) : err ? (
-              <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">
-                {err}
-              </div>
+              <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">{err}</div>
             ) : !anchorDate ? (
               <div className="text-sm text-slate-600">
                 No stock data found (check stock.xlsx sheets & date column).
               </div>
             ) : (
               <>
-                {/* Controls */}
                 <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
                     <div className="flex-1">
@@ -544,9 +530,7 @@ export default function RTMVsStocksDailyCard(props: {
                               type="button"
                               onClick={() => setMode("price")}
                               className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                                mode === "price"
-                                  ? "bg-slate-900 text-white"
-                                  : "bg-white text-slate-700 hover:bg-slate-50"
+                                mode === "price" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               Stock Price
@@ -555,9 +539,7 @@ export default function RTMVsStocksDailyCard(props: {
                               type="button"
                               onClick={() => setMode("ptb")}
                               className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                                mode === "ptb"
-                                  ? "bg-slate-900 text-white"
-                                  : "bg-white text-slate-700 hover:bg-slate-50"
+                                mode === "ptb" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               Price-to-Book
@@ -566,7 +548,6 @@ export default function RTMVsStocksDailyCard(props: {
                         </div>
                       </div>
 
-                      {/* ✅ Date Range Picker + Presets */}
                       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                         <div className="sm:col-span-1">
                           <div className="text-xs font-medium text-slate-600">Preset range</div>
@@ -622,7 +603,6 @@ export default function RTMVsStocksDailyCard(props: {
                       </div>
                     </div>
 
-                    {/* Stock multi-select */}
                     <div className="lg:w-[360px] lg:shrink-0">
                       <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
                         <div className="text-xs font-semibold text-slate-700">Stocks</div>
@@ -658,30 +638,17 @@ export default function RTMVsStocksDailyCard(props: {
                         <div className="mt-2 flex flex-wrap gap-2">
                           <button
                             type="button"
-                            onClick={() =>
-                              setSelectedStocks(stockUniverse.slice(0, Math.min(1, stockUniverse.length)))
-                            }
+                            onClick={() => setSelectedStocks(stockUniverse.slice(0, Math.min(1, stockUniverse.length)))}
                             className="rounded-lg bg-slate-900 px-2 py-1 text-[12px] font-semibold text-white hover:bg-slate-800"
                           >
                             Pick top 1
                           </button>
                           <button
                             type="button"
-                            onClick={() =>
-                              setSelectedStocks(stockUniverse.slice(0, Math.min(2, stockUniverse.length)))
-                            }
+                            onClick={() => setSelectedStocks(stockUniverse.slice(0, Math.min(2, stockUniverse.length)))}
                             className="rounded-lg bg-white px-2 py-1 text-[12px] font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
                           >
                             Pick top 2
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSelectedStocks(stockUniverse.slice(0, Math.min(5, stockUniverse.length)))
-                            }
-                            className="rounded-lg bg-white px-2 py-1 text-[12px] font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
-                          >
-                            Pick top 5
                           </button>
                           <button
                             type="button"
@@ -696,14 +663,12 @@ export default function RTMVsStocksDailyCard(props: {
                   </div>
                 </div>
 
-                {/* Chart */}
                 <div className="h-[380px] sm:h-[460px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 12, right: 42, bottom: 12, left: 42 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
 
-                      {/* Left axis: RTM Rs/Unit */}
                       <YAxis
                         yAxisId="left"
                         width={92}
@@ -712,7 +677,7 @@ export default function RTMVsStocksDailyCard(props: {
                         tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
                       />
 
-                      {/* ✅ Right axis: FIXED scaling (dataMin/dataMax + padding) */}
+                      {/* ✅ Right axis scaling fix */}
                       <YAxis
                         yAxisId="right"
                         orientation="right"
@@ -759,7 +724,6 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* RTM line */}
                       <Line
                         yAxisId="left"
                         type="monotone"
@@ -771,7 +735,6 @@ export default function RTMVsStocksDailyCard(props: {
                         connectNulls
                       />
 
-                      {/* Stock lines */}
                       {selectedStocks.map((s) => (
                         <Line
                           key={s}
@@ -786,7 +749,6 @@ export default function RTMVsStocksDailyCard(props: {
                         />
                       ))}
 
-                      {/* YoY line (only when enabled) */}
                       {showYoY ? (
                         <Line
                           yAxisId="right"
