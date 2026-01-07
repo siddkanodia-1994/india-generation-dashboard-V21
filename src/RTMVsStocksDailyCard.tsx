@@ -21,21 +21,15 @@ function parseISOKey(s: string) {
   return Number.isNaN(d.getTime()) ? null : s;
 }
 
-// Excel serial date -> ISO (UTC) (Excel day 1 = 1899-12-31; XLSX uses 1899-12-30 base)
 function excelSerialToISO(n: number) {
   if (!Number.isFinite(n)) return null;
   const ms = Math.round(n * 86400000);
-  const base = Date.UTC(1899, 11, 30); // 1899-12-30
+  const base = Date.UTC(1899, 11, 30);
   const d = new Date(base + ms);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 10);
 }
 
-// Accepts:
-// - Excel Date objects (XLSX cellDates:true)
-// - Excel serial numbers (raw dates)
-// - DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY
-// - ISO YYYY-MM-DD
 function parseInputDate(s: unknown) {
   if (s instanceof Date && !Number.isNaN(s.getTime())) return s.toISOString().slice(0, 10);
 
@@ -117,9 +111,7 @@ function isoMinusMonths(anchorIso: string, months: number) {
 
   const targetMonthIndex = m - months;
   const targetDate = new Date(Date.UTC(y, targetMonthIndex, 1));
-  const lastDay = new Date(
-    Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)
-  ).getUTCDate();
+  const lastDay = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)).getUTCDate();
   const clampedDay = Math.min(day, lastDay);
 
   const out = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), clampedDay));
@@ -323,12 +315,11 @@ export default function RTMVsStocksDailyCard(props: {
   const [rtmMap, setRtmMap] = useState<Map<string, number>>(new Map());
   const [stockSheets, setStockSheets] = useState<StockSheets>(buildEmptySheets());
 
-  // Defaults you requested
   const [mode, setMode] = useState<Mode>("price");
   const [windowDays, setWindowDays] = useState<WindowDays>(45);
   const [showYoY, setShowYoY] = useState(false);
 
-  // ✅ NEW: control lines toggle (RTM)
+  // Control lines toggle
   const [showRtmControlLines, setShowRtmControlLines] = useState(false);
 
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
@@ -448,7 +439,7 @@ export default function RTMVsStocksDailyCard(props: {
     return points;
   }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY]);
 
-  // ✅ NEW: RTM control lines (Mean ± 1σ) computed on current visible range (chartData)
+  // RTM control lines: mean ± 1σ, ±2σ on visible range
   const rtmControl = useMemo(() => {
     const vals = chartData
       .map((r) => asFiniteNumber(r?.rtm))
@@ -458,12 +449,17 @@ export default function RTMVsStocksDailyCard(props: {
 
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
     const variance =
-      vals.length > 1
-        ? vals.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / (vals.length - 1)
-        : 0;
+      vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / (vals.length - 1) : 0;
     const sd = Math.sqrt(Math.max(0, variance));
 
-    return { mean, upper: mean + sd, lower: mean - sd };
+    return {
+      mean,
+      sd,
+      p1: mean + sd,
+      p2: mean + 2 * sd,
+      m1: mean - sd,
+      m2: mean - 2 * sd
+    };
   }, [chartData]);
 
   const fmtRtm = (x: number | null | undefined) => {
@@ -594,7 +590,6 @@ export default function RTMVsStocksDailyCard(props: {
                           <span className="font-medium">Show YoY %</span>
                         </label>
 
-                        {/* ✅ NEW: RTM Control Lines toggle */}
                         <label className="flex items-center gap-2 text-sm text-slate-700">
                           <input
                             type="checkbox"
@@ -602,12 +597,10 @@ export default function RTMVsStocksDailyCard(props: {
                             onChange={(e) => setShowRtmControlLines(e.target.checked)}
                             className="h-4 w-4 rounded border-slate-300"
                           />
-                          <span className="font-medium">Show RTM control lines (Mean ± 1σ)</span>
+                          <span className="font-medium">
+                            Show RTM control lines (Mean, ±1σ, ±2σ)
+                          </span>
                         </label>
-
-                        <div className="text-xs text-slate-500">
-                          Stock rolling uses last {windowDays} available trading days. RTM rolling uses calendar days.
-                        </div>
                       </div>
                     </div>
 
@@ -677,7 +670,6 @@ export default function RTMVsStocksDailyCard(props: {
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
 
-                      {/* LEFT axis scaling fix (no-zero compression) */}
                       <YAxis
                         yAxisId="left"
                         width={92}
@@ -698,7 +690,6 @@ export default function RTMVsStocksDailyCard(props: {
                         ]}
                       />
 
-                      {/* Right axis scaling fix */}
                       <YAxis
                         yAxisId="right"
                         orientation="right"
@@ -745,46 +736,81 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* ✅ NEW: RTM control lines (Mean ± 1σ) */}
+                      {/* Colored control lines */}
                       {showRtmControlLines && rtmControl ? (
                         <>
+                          {/* Mean = black */}
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.mean}
-                            stroke="#64748b"
+                            stroke="#000000"
                             strokeDasharray="6 6"
                             ifOverflow="extendDomain"
                             label={{
                               value: `Mean (${fmtRtm(rtmControl.mean)})`,
                               position: "insideTopLeft",
                               fontSize: 11,
-                              fill: "#64748b"
+                              fill: "#000000"
                             }}
                           />
+
+                          {/* +1SD = orange */}
                           <ReferenceLine
                             yAxisId="left"
-                            y={rtmControl.upper}
-                            stroke="#94a3b8"
+                            y={rtmControl.p1}
+                            stroke="#f97316"
                             strokeDasharray="4 6"
                             ifOverflow="extendDomain"
                             label={{
-                              value: `+1σ (${fmtRtm(rtmControl.upper)})`,
+                              value: `+1σ (${fmtRtm(rtmControl.p1)})`,
                               position: "insideTopLeft",
                               fontSize: 11,
-                              fill: "#94a3b8"
+                              fill: "#f97316"
                             }}
                           />
+
+                          {/* +2SD = green */}
                           <ReferenceLine
                             yAxisId="left"
-                            y={rtmControl.lower}
-                            stroke="#94a3b8"
+                            y={rtmControl.p2}
+                            stroke="#16a34a"
                             strokeDasharray="4 6"
                             ifOverflow="extendDomain"
                             label={{
-                              value: `-1σ (${fmtRtm(rtmControl.lower)})`,
+                              value: `+2σ (${fmtRtm(rtmControl.p2)})`,
+                              position: "insideTopLeft",
+                              fontSize: 11,
+                              fill: "#16a34a"
+                            }}
+                          />
+
+                          {/* -1SD = dark yellow */}
+                          <ReferenceLine
+                            yAxisId="left"
+                            y={rtmControl.m1}
+                            stroke="#b45309"
+                            strokeDasharray="4 6"
+                            ifOverflow="extendDomain"
+                            label={{
+                              value: `-1σ (${fmtRtm(rtmControl.m1)})`,
                               position: "insideBottomLeft",
                               fontSize: 11,
-                              fill: "#94a3b8"
+                              fill: "#b45309"
+                            }}
+                          />
+
+                          {/* -2SD = violet */}
+                          <ReferenceLine
+                            yAxisId="left"
+                            y={rtmControl.m2}
+                            stroke="#7c3aed"
+                            strokeDasharray="4 6"
+                            ifOverflow="extendDomain"
+                            label={{
+                              value: `-2σ (${fmtRtm(rtmControl.m2)})`,
+                              position: "insideBottomLeft",
+                              fontSize: 11,
+                              fill: "#7c3aed"
                             }}
                           />
                         </>
