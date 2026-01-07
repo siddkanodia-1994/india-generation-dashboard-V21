@@ -30,13 +30,23 @@ function excelSerialToISO(n: number) {
   return d.toISOString().slice(0, 10);
 }
 
-// Accepts:
-// - Excel Date objects
-// - Excel serial numbers
-// - DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY
-// - ISO YYYY-MM-DD
+/**
+ * Accepts:
+ * - Excel Date objects
+ * - Excel serial numbers
+ * - DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY
+ * - ISO YYYY-MM-DD
+ *
+ * ✅ FIX: Date objects from XLSX must NOT use toISOString() because timezone conversion
+ * can shift the day back (IST -> UTC). We extract local calendar YYYY-MM-DD instead.
+ */
 function parseInputDate(s: unknown) {
-  if (s instanceof Date && !Number.isNaN(s.getTime())) return s.toISOString().slice(0, 10);
+  if (s instanceof Date && !Number.isNaN(s.getTime())) {
+    const yyyy = s.getFullYear();
+    const mm = String(s.getMonth() + 1).padStart(2, "0");
+    const dd = String(s.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
 
   if (typeof s === "number" && Number.isFinite(s)) {
     if (s > 20000 && s < 80000) return excelSerialToISO(s);
@@ -264,7 +274,6 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
   return out;
 }
 
-// STOCK rolling: last N available trading days <= anchor (skips missing dates)
 function rollingAvgStocks(series: Map<string, number>, anchor: string, n: number) {
   const dates = Array.from(series.keys()).filter((d) => d <= anchor).sort();
   if (!dates.length) return null;
@@ -278,7 +287,6 @@ function rollingAvgStocks(series: Map<string, number>, anchor: string, n: number
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
-// RTM rolling: calendar days window ending at anchor (skips missing values)
 function rollingAvgRtm(series: Map<string, number>, anchor: string, n: number) {
   const start = isoMinusDays(anchor, n - 1);
   let cur = start;
@@ -318,7 +326,6 @@ function Card({
   );
 }
 
-// ✅ Different colors for multiple stocks
 const STOCK_COLORS = [
   "#2563eb", // blue
   "#9333ea", // purple
@@ -345,20 +352,21 @@ export default function RTMVsStocksDailyCard(props: {
   const [rtmMap, setRtmMap] = useState<Map<string, number>>(new Map());
   const [stockSheets, setStockSheets] = useState<StockSheets>(buildEmptySheets());
 
-  // Defaults requested earlier
   const [mode, setMode] = useState<Mode>("price");
   const [windowDays, setWindowDays] = useState<WindowDays>(45);
+
+  // toggles
   const [showYoY, setShowYoY] = useState(false);
   const [showRtmControlLines, setShowRtmControlLines] = useState(false);
 
-  // ✅ NEW: Lag control (days) – RTM only
+  // lag control
   const [lagDays, setLagDays] = useState<number>(0);
 
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Presets + manual range
+  // range preset + inputs
   const [preset, setPreset] = useState<RangePreset>("24m");
   const [fromInput, setFromInput] = useState<string>("");
   const [toInput, setToInput] = useState<string>("");
@@ -383,7 +391,6 @@ export default function RTMVsStocksDailyCard(props: {
         setRtmMap(rtm);
         setStockSheets(stocks);
 
-        // Default: only 1 stock checked
         const cols = stocks.prices.cols.length ? stocks.prices.cols : stocks.ptb.cols;
         setSelectedStocks(cols.slice(0, Math.min(1, cols.length)));
 
@@ -405,13 +412,8 @@ export default function RTMVsStocksDailyCard(props: {
   const activeSheet = mode === "price" ? stockSheets.prices : stockSheets.ptb;
   const stockUniverse = activeSheet.cols;
 
-  // Stock anchor = latest stock date in active sheet (unchanged)
-  const stockLatest = activeSheet.latestDate;
+  const anchorDate = activeSheet.latestDate;
 
-  // Use stockLatest as the "overall" latest for UI defaults
-  const anchorDate = stockLatest;
-
-  // Apply preset -> fill inputs
   useEffect(() => {
     if (!anchorDate) return;
 
@@ -426,7 +428,6 @@ export default function RTMVsStocksDailyCard(props: {
     if (preset === "36m") fromIso = isoMinusMonths(anchorDate, 36);
     if (preset === "ytd") fromIso = isoStartOfYear(anchorDate);
 
-    // "all": compute earliest among stock dates (active sheet), fallback to 36m
     if (preset === "all") {
       const earliest = activeSheet.dates.length ? activeSheet.dates[0] : isoMinusMonths(anchorDate, 36);
       fromIso = earliest;
@@ -442,39 +443,29 @@ export default function RTMVsStocksDailyCard(props: {
     const parsedTo = parseInputDate(toInput);
     const parsedFrom = parseInputDate(fromInput);
 
-    // Stocks end date (anchor) = chosen To, capped at latest available stock date
     const safeTo = parsedTo && parsedTo <= anchorDate ? parsedTo : anchorDate;
 
-    // From must be <= To; if invalid, fall back to preset-derived computed above via inputs already set
-    const safeFrom =
-      parsedFrom && parsedFrom <= safeTo ? parsedFrom : (parseInputDate(fromInput) && parseInputDate(fromInput)! <= safeTo ? parseInputDate(fromInput)! : null);
+    const safeFrom = parsedFrom && parsedFrom <= safeTo ? parsedFrom : isoMinusMonths(anchorDate, 24);
 
-    // If still null (very malformed input), just do 24m
-    const fallbackFrom = isoMinusMonths(anchorDate, 24);
-
-    return { fromIso: safeFrom ?? fallbackFrom, toIso: safeTo };
+    return { fromIso: safeFrom, toIso: safeTo };
   }, [anchorDate, fromInput, toInput]);
 
-  // ✅ RTM anchor is shifted back by lagDays (clamped)
+  const lagClamped = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
+
   const rtmAnchor = useMemo(() => {
     if (!range.toIso) return null;
-    const lag = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
-    return isoMinusDays(range.toIso, lag);
-  }, [range.toIso, lagDays]);
+    return isoMinusDays(range.toIso, lagClamped);
+  }, [range.toIso, lagClamped]);
 
-  // ✅ Chart series: X-axis is the selected date range.
-  // Stocks use each date as-is. RTM uses shifted date (date - lagDays) for the rolling calc.
   const chartData = useMemo(() => {
     if (!range.fromIso || !range.toIso) return [];
     if (!rtmMap.size) return [];
-
-    const lag = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
 
     const points: any[] = [];
     let cur = range.fromIso;
 
     while (cur <= range.toIso) {
-      const rtmDate = lag ? isoMinusDays(cur, lag) : cur;
+      const rtmDate = lagClamped ? isoMinusDays(cur, lagClamped) : cur;
       const rtm = rollingAvgRtm(rtmMap, rtmDate, windowDays);
 
       const row: any = {
@@ -484,18 +475,15 @@ export default function RTMVsStocksDailyCard(props: {
         __rtmIso: rtmDate
       };
 
-      // Stocks: last N available trading days ending on cur
       for (const s of selectedStocks) {
         const series = activeSheet.values.get(s);
         if (!series) continue;
         row[s] = rollingAvgStocks(series, cur, windowDays);
       }
 
-      // YoY: compare each series vs (date - 365) on its own timeline
-      // For RTM, apply lag to BOTH current and PY anchor consistently (cur-lag) vs (cur-365-lag)
       if (showYoY) {
         const py = isoMinusDays(cur, 365);
-        const rtmPYDate = lag ? isoMinusDays(py, lag) : py;
+        const rtmPYDate = lagClamped ? isoMinusDays(py, lagClamped) : py;
 
         const rtmPY = rollingAvgRtm(rtmMap, rtmPYDate, windowDays);
         row.rtm_yoy = rtm != null && rtmPY != null ? growthPct(rtm, rtmPY) : null;
@@ -514,9 +502,43 @@ export default function RTMVsStocksDailyCard(props: {
     }
 
     return points;
-  }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY, lagDays]);
+  }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY, lagClamped]);
 
-  // RTM control lines computed on the *visible* RTM series (already lagged)
+  // compute y-axis domains with "no-zero compression" + gentle padding
+  const domains = useMemo(() => {
+    const padPct = 0.06;
+
+    const rtmVals = chartData
+      .map((r) => asFiniteNumber(r?.rtm))
+      .filter((x): x is number => x != null && Number.isFinite(x));
+
+    const stockVals: number[] = [];
+    for (const r of chartData) {
+      for (const s of selectedStocks) {
+        const v = asFiniteNumber(r?.[s]);
+        if (v != null) stockVals.push(v);
+      }
+    }
+
+    const calc = (vals: number[]) => {
+      if (!vals.length) return { min: 0, max: 1 };
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      if (min === max) {
+        const bump = Math.abs(min || 1) * 0.05;
+        return { min: min - bump, max: max + bump };
+      }
+      const range = max - min;
+      const pad = range * padPct;
+      return { min: min - pad, max: max + pad };
+    };
+
+    return {
+      rtm: calc(rtmVals),
+      stocks: calc(stockVals)
+    };
+  }, [chartData, selectedStocks]);
+
   const rtmControl = useMemo(() => {
     const vals = chartData
       .map((r) => asFiniteNumber(r?.rtm))
@@ -530,7 +552,6 @@ export default function RTMVsStocksDailyCard(props: {
     return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
   }, [chartData]);
 
-  // Quick stats (latest point in visible range)
   const quickStats = useMemo(() => {
     if (!chartData.length) return null;
     const last = chartData[chartData.length - 1];
@@ -576,10 +597,9 @@ export default function RTMVsStocksDailyCard(props: {
     </div>
   ) : null;
 
-  const CONTROL_STROKE_WIDTH = 2.8;
-  const CONTROL_DASH = "3 4";
-
-  const lagClamped = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
+  // Control lines more visible
+  const CONTROL_STROKE_WIDTH = 3.6;
+  const CONTROL_DASH = "0"; // solid
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -594,7 +614,6 @@ export default function RTMVsStocksDailyCard(props: {
               <div className="text-sm text-slate-600">No stock data found (check stock.xlsx sheets & date column).</div>
             ) : (
               <>
-                {/* Controls */}
                 <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
                     <div className="flex-1">
@@ -637,7 +656,6 @@ export default function RTMVsStocksDailyCard(props: {
                           </div>
                         </div>
 
-                        {/* ✅ NEW: Lag input */}
                         <div>
                           <div className="text-xs font-medium text-slate-600">Lag (days)</div>
                           <input
@@ -658,8 +676,9 @@ export default function RTMVsStocksDailyCard(props: {
                             className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
                           />
                           <div className="mt-1 text-[11px] text-slate-500">
-                            RTM anchors to <span className="font-semibold">{range.toIso ? formatDDMMYYYY(rtmAnchor || range.toIso) : "—"}</span>{" "}
-                            (To − {lagClamped}d). Stocks anchor to To date.
+                            RTM anchors to{" "}
+                            <span className="font-semibold">{range.toIso ? formatDDMMYYYY(rtmAnchor || range.toIso) : "—"}</span> (To − {lagClamped}d). Stocks
+                            anchor to To date.
                           </div>
                         </div>
                       </div>
@@ -730,7 +749,6 @@ export default function RTMVsStocksDailyCard(props: {
                         </div>
                       </div>
 
-                      {/* Quick stats */}
                       {quickStats ? (
                         <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-slate-200">
                           <div className="text-xs font-semibold text-slate-700">Quick stats (latest in range)</div>
@@ -779,7 +797,6 @@ export default function RTMVsStocksDailyCard(props: {
                       ) : null}
                     </div>
 
-                    {/* Stock multi-select */}
                     <div className="lg:w-[360px] lg:shrink-0">
                       <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
                         <div className="text-xs font-semibold text-slate-700">Stocks</div>
@@ -840,39 +857,21 @@ export default function RTMVsStocksDailyCard(props: {
                   </div>
                 </div>
 
-                {/* Chart */}
                 <div className="h-[380px] sm:h-[480px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 12, right: 42, bottom: 12, left: 42 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
 
-                      {/* Left axis: RTM (apply same no-zero compression domain logic) */}
                       <YAxis
                         yAxisId="left"
                         width={92}
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
-                        tickFormatter={(v) => {
-                          const n = asFiniteNumber(v);
-                          if (n == null) return "—";
-                          return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n);
-                        }}
-                        domain={[
-                          (dataMin: number) => {
-                            if (!Number.isFinite(dataMin)) return 0;
-                            const pad = Math.abs(dataMin) * 0.05;
-                            return dataMin - pad;
-                          },
-                          (dataMax: number) => {
-                            if (!Number.isFinite(dataMax)) return 0;
-                            const pad = Math.abs(dataMax) * 0.05;
-                            return dataMax + pad;
-                          }
-                        ]}
+                        tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
+                        domain={[domains.rtm.min, domains.rtm.max]}
                       />
 
-                      {/* Right axis: stocks */}
                       <YAxis
                         yAxisId="right"
                         orientation="right"
@@ -880,18 +879,7 @@ export default function RTMVsStocksDailyCard(props: {
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtNum(asFiniteNumber(v))}
-                        domain={[
-                          (dataMin: number) => {
-                            if (!Number.isFinite(dataMin)) return 0;
-                            const pad = Math.abs(dataMin) * 0.05;
-                            return dataMin - pad;
-                          },
-                          (dataMax: number) => {
-                            if (!Number.isFinite(dataMax)) return 0;
-                            const pad = Math.abs(dataMax) * 0.05;
-                            return dataMax + pad;
-                          }
-                        ]}
+                        domain={[domains.stocks.min, domains.stocks.max]}
                       />
 
                       <Tooltip
@@ -919,7 +907,6 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* RTM control lines */}
                       {showRtmControlLines && rtmControl ? (
                         <>
                           <ReferenceLine
@@ -936,7 +923,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#000000"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p1}
@@ -951,7 +937,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#f97316"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p2}
@@ -966,7 +951,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#16a34a"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m1}
@@ -981,7 +965,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#b45309"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m2}
@@ -999,7 +982,6 @@ export default function RTMVsStocksDailyCard(props: {
                         </>
                       ) : null}
 
-                      {/* RTM line */}
                       <Line
                         yAxisId="left"
                         type="monotone"
@@ -1011,7 +993,6 @@ export default function RTMVsStocksDailyCard(props: {
                         connectNulls
                       />
 
-                      {/* Stock lines (color per index) */}
                       {selectedStocks.map((s, i) => (
                         <Line
                           key={s}
@@ -1026,7 +1007,6 @@ export default function RTMVsStocksDailyCard(props: {
                         />
                       ))}
 
-                      {/* YoY line (optional) */}
                       {showYoY ? (
                         <Line
                           yAxisId="right"
@@ -1044,8 +1024,9 @@ export default function RTMVsStocksDailyCard(props: {
                 </div>
 
                 <div className="mt-2 text-[11px] text-slate-500">
-                  Stocks are computed on chart date range ending at <span className="font-semibold">{range.toIso ? formatDDMMYYYY(range.toIso) : "—"}</span>. RTM
-                  is computed using a lagged anchor (To − {lagClamped}d) ending at{" "}
+                  Stocks are computed on chart date range ending at{" "}
+                  <span className="font-semibold">{range.toIso ? formatDDMMYYYY(range.toIso) : "—"}</span>. RTM is computed
+                  using a lagged anchor (To − {lagClamped}d) ending at{" "}
                   <span className="font-semibold">{rtmAnchor ? formatDDMMYYYY(rtmAnchor) : "—"}</span>.
                 </div>
               </>
