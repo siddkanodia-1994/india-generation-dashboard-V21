@@ -530,7 +530,9 @@ export default function RTMVsStocksDailyCard(props: {
                               type="button"
                               onClick={() => setMode("price")}
                               className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                                mode === "price" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
+                                mode === "price"
+                                  ? "bg-slate-900 text-white"
+                                  : "bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               Stock Price
@@ -539,7 +541,9 @@ export default function RTMVsStocksDailyCard(props: {
                               type="button"
                               onClick={() => setMode("ptb")}
                               className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                                mode === "ptb" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
+                                mode === "ptb"
+                                  ? "bg-slate-900 text-white"
+                                  : "bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               Price-to-Book
@@ -669,12 +673,25 @@ export default function RTMVsStocksDailyCard(props: {
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
 
+                      {/* ✅ LEFT axis scaling fix (no-zero compression) */}
                       <YAxis
                         yAxisId="left"
                         width={92}
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
+                        domain={[
+                          (dataMin: number) => {
+                            if (!Number.isFinite(dataMin)) return 0;
+                            const pad = Math.abs(dataMin) * 0.05;
+                            return dataMin - pad;
+                          },
+                          (dataMax: number) => {
+                            if (!Number.isFinite(dataMax)) return 0;
+                            const pad = Math.abs(dataMax) * 0.05;
+                            return dataMax + pad;
+                          }
+                        ]}
                       />
 
                       {/* ✅ Right axis scaling fix */}
