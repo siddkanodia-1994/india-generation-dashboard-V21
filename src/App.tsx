@@ -3,6 +3,7 @@ import { Tabs, TabList, Tab, TabPanel } from "react-tabs";
 import "react-tabs/style/react-tabs.css";
 
 import ElectricityDashboard from "./ElectricityDashboard";
+import RTMVsStocksDailyCard from "./RTMVsStocksDailyCard";
 import RatedCapacity from "./RatedCapacity";
 import LatestNews from "./LatestNews";
 import LatestReports from "./LatestReports";
@@ -19,6 +20,7 @@ export default function App() {
               <Tab>Supply</Tab>
               <Tab>Coal PLF</Tab>
               <Tab>RTM Prices</Tab>
+              <Tab>RTM Vs Stocks</Tab>
               <Tab>DAM Prices</Tab>
               <Tab>Rated Capacity</Tab>
               <Tab>Latest News</Tab>
@@ -228,6 +230,17 @@ export default function App() {
                 />
               </TabPanel>
             </Tabs>
+          </TabPanel>
+
+          {/* ===========================
+              RTM Vs Stocks (NEW)
+              =========================== */}
+          <TabPanel>
+            <RTMVsStocksDailyCard
+              rtmCsvUrl="/data/RTM Prices.csv"
+              stockFileUrl="/data/stock.xlsx"
+              rtmValueColumnKey="rtm_price"
+            />
           </TabPanel>
 
           {/* ===========================
