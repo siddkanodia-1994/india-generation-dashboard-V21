@@ -7,7 +7,8 @@ import {
   ResponsiveContainer,
   Tooltip,
   XAxis,
-  YAxis
+  YAxis,
+  ReferenceLine
 } from "recharts";
 
 type Mode = "price" | "ptb";
@@ -23,7 +24,6 @@ function parseISOKey(s: string) {
 // Excel serial date -> ISO (UTC) (Excel day 1 = 1899-12-31; XLSX uses 1899-12-30 base)
 function excelSerialToISO(n: number) {
   if (!Number.isFinite(n)) return null;
-  // Handle fractional days too
   const ms = Math.round(n * 86400000);
   const base = Date.UTC(1899, 11, 30); // 1899-12-30
   const d = new Date(base + ms);
@@ -37,18 +37,10 @@ function excelSerialToISO(n: number) {
 // - DD/MM/YYYY, DD/MM/YY, DD-MM-YYYY, DD-MM-YY
 // - ISO YYYY-MM-DD
 function parseInputDate(s: unknown) {
-  // ✅ Date object
-  if (s instanceof Date && !Number.isNaN(s.getTime())) {
-    return s.toISOString().slice(0, 10);
-  }
+  if (s instanceof Date && !Number.isNaN(s.getTime())) return s.toISOString().slice(0, 10);
 
-  // ✅ Excel serial (number)
   if (typeof s === "number" && Number.isFinite(s)) {
-    // Heuristic: treat typical Excel serials as dates
-    // (works for normal datasets; ignores tiny numbers)
-    if (s > 20000 && s < 80000) {
-      return excelSerialToISO(s);
-    }
+    if (s > 20000 && s < 80000) return excelSerialToISO(s);
   }
 
   if (typeof s !== "string") return null;
@@ -72,8 +64,7 @@ function parseInputDate(s: unknown) {
   if (m) {
     const dd = Number(m[1]);
     const mm = Number(m[2]);
-    const yy = Number(m[3]);
-    const yyyy = 2000 + yy;
+    const yyyy = 2000 + Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
     if (!Number.isNaN(d.getTime()))
       return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
@@ -95,8 +86,7 @@ function parseInputDate(s: unknown) {
   if (m) {
     const dd = Number(m[1]);
     const mm = Number(m[2]);
-    const yy = Number(m[3]);
-    const yyyy = 2000 + yy;
+    const yyyy = 2000 + Number(m[3]);
     const d = new Date(Date.UTC(yyyy, mm - 1, dd));
     if (!Number.isNaN(d.getTime()))
       return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
@@ -221,8 +211,6 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
   const buf = await res.arrayBuffer();
   const XLSX = await import("xlsx");
-
-  // ✅ IMPORTANT: cellDates:true helps when the sheet stores true dates
   const wb = XLSX.read(buf, { type: "array", cellDates: true });
   const sheetNames = wb.SheetNames || [];
 
@@ -233,16 +221,9 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
   function parseSheet(sheetName: string | undefined) {
     if (!sheetName)
-      return {
-        dates: [] as string[],
-        cols: [] as string[],
-        values: new Map<string, Map<string, number>>(),
-        latestDate: null as string | null
-      };
+      return { dates: [] as string[], cols: [] as string[], values: new Map(), latestDate: null as string | null };
 
     const ws = wb.Sheets[sheetName];
-
-    // header:1 => array-of-arrays, raw:true so we can detect serial numbers
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
     if (!aoa || aoa.length < 2) return { dates: [], cols: [], values: new Map(), latestDate: null };
 
@@ -256,7 +237,7 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
     for (let r = 1; r < aoa.length; r++) {
       const row = aoa[r] || [];
-      const d = parseInputDate(row[0]); // ✅ now supports Date + serial + strings
+      const d = parseInputDate(row[0]);
       if (!d) continue;
 
       let any = false;
@@ -272,13 +253,11 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
     dates.sort();
     const latestDate = dates.length ? dates[dates.length - 1] : null;
-
     return { dates, cols, values, latestDate };
   }
 
   out.prices = parseSheet(s1);
   out.ptb = parseSheet(s2);
-
   return out;
 }
 
@@ -344,10 +323,13 @@ export default function RTMVsStocksDailyCard(props: {
   const [rtmMap, setRtmMap] = useState<Map<string, number>>(new Map());
   const [stockSheets, setStockSheets] = useState<StockSheets>(buildEmptySheets());
 
-  // ✅ Defaults you requested
+  // Defaults you requested
   const [mode, setMode] = useState<Mode>("price");
   const [windowDays, setWindowDays] = useState<WindowDays>(45);
   const [showYoY, setShowYoY] = useState(false);
+
+  // ✅ NEW: control lines toggle (RTM)
+  const [showRtmControlLines, setShowRtmControlLines] = useState(false);
 
   const [selectedStocks, setSelectedStocks] = useState<string[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
@@ -377,7 +359,6 @@ export default function RTMVsStocksDailyCard(props: {
         setRtmMap(rtm);
         setStockSheets(stocks);
 
-        // ✅ Default: only 1 stock checked
         const cols = stocks.prices.cols.length ? stocks.prices.cols : stocks.ptb.cols;
         setSelectedStocks(cols.slice(0, Math.min(1, cols.length)));
 
@@ -467,6 +448,24 @@ export default function RTMVsStocksDailyCard(props: {
     return points;
   }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY]);
 
+  // ✅ NEW: RTM control lines (Mean ± 1σ) computed on current visible range (chartData)
+  const rtmControl = useMemo(() => {
+    const vals = chartData
+      .map((r) => asFiniteNumber(r?.rtm))
+      .filter((x): x is number => x != null && Number.isFinite(x));
+
+    if (!vals.length) return null;
+
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const variance =
+      vals.length > 1
+        ? vals.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / (vals.length - 1)
+        : 0;
+    const sd = Math.sqrt(Math.max(0, variance));
+
+    return { mean, upper: mean + sd, lower: mean - sd };
+  }, [chartData]);
+
   const fmtRtm = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
     return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(x);
@@ -500,9 +499,7 @@ export default function RTMVsStocksDailyCard(props: {
             ) : err ? (
               <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">{err}</div>
             ) : !anchorDate ? (
-              <div className="text-sm text-slate-600">
-                No stock data found (check stock.xlsx sheets & date column).
-              </div>
+              <div className="text-sm text-slate-600">No stock data found (check stock.xlsx sheets & date column).</div>
             ) : (
               <>
                 <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
@@ -530,9 +527,7 @@ export default function RTMVsStocksDailyCard(props: {
                               type="button"
                               onClick={() => setMode("price")}
                               className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                                mode === "price"
-                                  ? "bg-slate-900 text-white"
-                                  : "bg-white text-slate-700 hover:bg-slate-50"
+                                mode === "price" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               Stock Price
@@ -541,9 +536,7 @@ export default function RTMVsStocksDailyCard(props: {
                               type="button"
                               onClick={() => setMode("ptb")}
                               className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                                mode === "ptb"
-                                  ? "bg-slate-900 text-white"
-                                  : "bg-white text-slate-700 hover:bg-slate-50"
+                                mode === "ptb" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
                               }`}
                             >
                               Price-to-Book
@@ -590,7 +583,7 @@ export default function RTMVsStocksDailyCard(props: {
                         </div>
                       </div>
 
-                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <div className="mt-3 flex flex-wrap items-center gap-4">
                         <label className="flex items-center gap-2 text-sm text-slate-700">
                           <input
                             type="checkbox"
@@ -599,6 +592,17 @@ export default function RTMVsStocksDailyCard(props: {
                             className="h-4 w-4 rounded border-slate-300"
                           />
                           <span className="font-medium">Show YoY %</span>
+                        </label>
+
+                        {/* ✅ NEW: RTM Control Lines toggle */}
+                        <label className="flex items-center gap-2 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={showRtmControlLines}
+                            onChange={(e) => setShowRtmControlLines(e.target.checked)}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                          <span className="font-medium">Show RTM control lines (Mean ± 1σ)</span>
                         </label>
 
                         <div className="text-xs text-slate-500">
@@ -673,7 +677,7 @@ export default function RTMVsStocksDailyCard(props: {
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
 
-                      {/* ✅ LEFT axis scaling fix (no-zero compression) */}
+                      {/* LEFT axis scaling fix (no-zero compression) */}
                       <YAxis
                         yAxisId="left"
                         width={92}
@@ -694,7 +698,7 @@ export default function RTMVsStocksDailyCard(props: {
                         ]}
                       />
 
-                      {/* ✅ Right axis scaling fix */}
+                      {/* Right axis scaling fix */}
                       <YAxis
                         yAxisId="right"
                         orientation="right"
@@ -740,6 +744,51 @@ export default function RTMVsStocksDailyCard(props: {
                       />
 
                       <Legend />
+
+                      {/* ✅ NEW: RTM control lines (Mean ± 1σ) */}
+                      {showRtmControlLines && rtmControl ? (
+                        <>
+                          <ReferenceLine
+                            yAxisId="left"
+                            y={rtmControl.mean}
+                            stroke="#64748b"
+                            strokeDasharray="6 6"
+                            ifOverflow="extendDomain"
+                            label={{
+                              value: `Mean (${fmtRtm(rtmControl.mean)})`,
+                              position: "insideTopLeft",
+                              fontSize: 11,
+                              fill: "#64748b"
+                            }}
+                          />
+                          <ReferenceLine
+                            yAxisId="left"
+                            y={rtmControl.upper}
+                            stroke="#94a3b8"
+                            strokeDasharray="4 6"
+                            ifOverflow="extendDomain"
+                            label={{
+                              value: `+1σ (${fmtRtm(rtmControl.upper)})`,
+                              position: "insideTopLeft",
+                              fontSize: 11,
+                              fill: "#94a3b8"
+                            }}
+                          />
+                          <ReferenceLine
+                            yAxisId="left"
+                            y={rtmControl.lower}
+                            stroke="#94a3b8"
+                            strokeDasharray="4 6"
+                            ifOverflow="extendDomain"
+                            label={{
+                              value: `-1σ (${fmtRtm(rtmControl.lower)})`,
+                              position: "insideBottomLeft",
+                              fontSize: 11,
+                              fill: "#94a3b8"
+                            }}
+                          />
+                        </>
+                      ) : null}
 
                       <Line
                         yAxisId="left"
