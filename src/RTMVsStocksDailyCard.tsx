@@ -36,13 +36,16 @@ function excelSerialToISO(n: number) {
   return d.toISOString().slice(0, 10);
 }
 
-// ✅ Critical fix for T-1 bug:
-// If XLSX gives a Date object, NEVER do toISOString() (it shifts day in IST).
-// Convert using LOCAL calendar fields.
+// ✅ FIXED (timezone-proof): Excel Date object -> ISO
+// Strategy: shift by +12h then take UTC date parts (prevents T-1 in any timezone)
 function dateObjToLocalISO(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = d.getMonth() + 1;
-  const dd = d.getDate();
+  const ms = d.getTime();
+  if (!Number.isFinite(ms)) return null;
+
+  const d2 = new Date(ms + 12 * 60 * 60 * 1000); // +12h
+  const yyyy = d2.getUTCFullYear();
+  const mm = d2.getUTCMonth() + 1;
+  const dd = d2.getUTCDate();
   return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
 }
 
@@ -207,36 +210,6 @@ function parseRtmCsv(text: string, valueColumnKey: string) {
 }
 
 /* -----------------------------
-   Correlation helper (Pearson)
------------------------------ */
-
-// Returns Pearson correlation of paired values (x,y), ignoring nulls.
-// Needs at least 2 points. Equivalent to Excel CORREL(rangeX, rangeY).
-function pearsonCorr(pairs: Array<[number, number]>) {
-  const n = pairs.length;
-  if (n < 2) return null;
-
-  let sumX = 0, sumY = 0, sumXX = 0, sumYY = 0, sumXY = 0;
-  for (const [x, y] of pairs) {
-    sumX += x;
-    sumY += y;
-    sumXX += x * x;
-    sumYY += y * y;
-    sumXY += x * y;
-  }
-
-  const num = n * sumXY - sumX * sumY;
-  const denX = n * sumXX - sumX * sumX;
-  const denY = n * sumYY - sumY * sumY;
-
-  const den = Math.sqrt(Math.max(0, denX) * Math.max(0, denY));
-  if (!Number.isFinite(den) || den === 0) return null;
-
-  const r = num / den;
-  return Number.isFinite(r) ? Math.max(-1, Math.min(1, r)) : null;
-}
-
-/* -----------------------------
    XLSX load
 ----------------------------- */
 
@@ -296,7 +269,7 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
     for (let r = 1; r < aoa.length; r++) {
       const row = aoa[r] || [];
-      const d = parseInputDate(row[0]); // ✅ Date objects handled safely (no T-1)
+      const d = parseInputDate(row[0]); // ✅ FIXED date parsing
       if (!d) continue;
 
       let any = false;
@@ -581,28 +554,14 @@ export default function RTMVsStocksDailyCard(props: {
     return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
   }, [chartData]);
 
-  // Quick stats (+ correlation over selected range)
+  // Quick stats
   const quickStats = useMemo(() => {
     if (!chartData.length) return null;
     const last = chartData[chartData.length - 1];
 
     const rtm = asFiniteNumber(last?.rtm);
-
     const stocks: Record<string, number | null> = {};
     for (const s of selectedStocks) stocks[s] = asFiniteNumber(last?.[s]);
-
-    // ✅ correlation over visible range: rtm vs each selected stock
-    const corr: Record<string, number | null> = {};
-    for (const s of selectedStocks) {
-      const pairs: Array<[number, number]> = [];
-      for (const row of chartData) {
-        const x = asFiniteNumber(row?.rtm);
-        const y = asFiniteNumber(row?.[s]);
-        if (x == null || y == null) continue;
-        pairs.push([x, y]);
-      }
-      corr[s] = pearsonCorr(pairs);
-    }
 
     const rtmYoY = asFiniteNumber(last?.rtm_yoy);
     const stocksYoY: Record<string, number | null> = {};
@@ -613,7 +572,6 @@ export default function RTMVsStocksDailyCard(props: {
       rtmDate: last?.__rtmIso ? formatDDMMYYYY(last.__rtmIso) : "—",
       rtm,
       stocks,
-      corr,
       rtmYoY,
       stocksYoY
     };
@@ -633,11 +591,6 @@ export default function RTMVsStocksDailyCard(props: {
     if (x == null || Number.isNaN(x)) return "—";
     const sign = x > 0 ? "+" : "";
     return `${sign}${x.toFixed(2)}%`;
-  };
-
-  const fmtCorr = (x: number | null | undefined) => {
-    if (x == null || Number.isNaN(x)) return "—";
-    return x.toFixed(2);
   };
 
   const titleRight = anchorDate ? (
@@ -809,7 +762,6 @@ export default function RTMVsStocksDailyCard(props: {
                         </div>
                       </div>
 
-                      {/* Quick stats */}
                       {quickStats ? (
                         <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-slate-200">
                           <div className="text-xs font-semibold text-slate-700">Quick stats (latest in range)</div>
@@ -842,17 +794,6 @@ export default function RTMVsStocksDailyCard(props: {
                                   </div>
                                 ))}
                               </div>
-
-                              {/* ✅ NEW: Correlation over selected range */}
-                              <div className="mt-2 space-y-1 text-[11px] text-slate-500">
-                                {selectedStocks.map((s) => (
-                                  <div key={`${s}-corr`} className="flex items-center justify-between gap-2">
-                                    <span className="truncate">{s} corr vs RTM</span>
-                                    <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr[s])}</span>
-                                  </div>
-                                ))}
-                              </div>
-
                               {showYoY ? (
                                 <div className="mt-2 space-y-1 text-[11px] text-slate-500">
                                   {selectedStocks.map((s) => (
@@ -869,7 +810,6 @@ export default function RTMVsStocksDailyCard(props: {
                       ) : null}
                     </div>
 
-                    {/* Stock multi-select */}
                     <div className="lg:w-[360px] lg:shrink-0">
                       <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
                         <div className="text-xs font-semibold text-slate-700">Stocks</div>
@@ -930,7 +870,6 @@ export default function RTMVsStocksDailyCard(props: {
                   </div>
                 </div>
 
-                {/* Chart */}
                 <div className="h-[380px] sm:h-[480px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 12, right: 42, bottom: 12, left: 42 }}>
@@ -1007,15 +946,14 @@ export default function RTMVsStocksDailyCard(props: {
 
                       <Legend />
 
-                      {/* ✅ RTM control lines as dotted ReferenceLines */}
                       {showRtmControlLines && rtmControl ? (
                         <>
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.mean}
                             stroke="#000000"
-                            strokeWidth={2.8}
-                            strokeDasharray={"3 4"}
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `Mean (${fmtRtm(rtmControl.mean)})`,
@@ -1029,8 +967,8 @@ export default function RTMVsStocksDailyCard(props: {
                             yAxisId="left"
                             y={rtmControl.p1}
                             stroke="#f97316"
-                            strokeWidth={2.8}
-                            strokeDasharray={"3 4"}
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `+1σ (${fmtRtm(rtmControl.p1)})`,
@@ -1044,8 +982,8 @@ export default function RTMVsStocksDailyCard(props: {
                             yAxisId="left"
                             y={rtmControl.p2}
                             stroke="#16a34a"
-                            strokeWidth={2.8}
-                            strokeDasharray={"3 4"}
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `+2σ (${fmtRtm(rtmControl.p2)})`,
@@ -1059,8 +997,8 @@ export default function RTMVsStocksDailyCard(props: {
                             yAxisId="left"
                             y={rtmControl.m1}
                             stroke="#b45309"
-                            strokeWidth={2.8}
-                            strokeDasharray={"3 4"}
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `-1σ (${fmtRtm(rtmControl.m1)})`,
@@ -1074,8 +1012,8 @@ export default function RTMVsStocksDailyCard(props: {
                             yAxisId="left"
                             y={rtmControl.m2}
                             stroke="#7c3aed"
-                            strokeWidth={2.8}
-                            strokeDasharray={"3 4"}
+                            strokeWidth={CONTROL_STROKE_WIDTH}
+                            strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
                               value: `-2σ (${fmtRtm(rtmControl.m2)})`,
