@@ -137,14 +137,10 @@ function isoMinusMonths(anchorIso: string, months: number) {
 
   const targetMonthIndex = m - months;
   const targetDate = new Date(Date.UTC(y, targetMonthIndex, 1));
-  const lastDay = new Date(
-    Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)
-  ).getUTCDate();
+  const lastDay = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth() + 1, 0)).getUTCDate();
   const clampedDay = Math.min(day, lastDay);
 
-  const out = new Date(
-    Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), clampedDay)
-  );
+  const out = new Date(Date.UTC(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), clampedDay));
   return out.toISOString().slice(0, 10);
 }
 
@@ -212,7 +208,7 @@ function parseRtmCsv(text: string, valueColumnKey: string) {
 }
 
 /* -----------------------------
-   ✅ ADD: Pearson correlation helper (Excel CORREL)
+   ✅ Pearson correlation helper (Excel CORREL)
 ----------------------------- */
 
 function pearsonCorrPairs(pairs: Array<[number, number]>) {
@@ -245,7 +241,7 @@ function pearsonCorrPairs(pairs: Array<[number, number]>) {
 }
 
 /* -----------------------------
-   ✅ ADD: Linear regression + R² (for scatter)
+   ✅ Linear regression + R² (for scatter)
 ----------------------------- */
 
 function linearRegressionPairs(pairs: Array<[number, number]>) {
@@ -267,29 +263,24 @@ function linearRegressionPairs(pairs: Array<[number, number]>) {
   const den = n * sumXX - sumX * sumX;
   if (!Number.isFinite(den) || den === 0) return null;
 
-  const slope = (n * sumXY - sumX * sumY) / den;
-  const intercept = (sumY - slope * sumX) / n;
+  const m = (n * sumXY - sumX * sumY) / den;
+  const b = (sumY - m * sumX) / n;
 
   // R²
-  const meanY = sumY / n;
-  let sse = 0;
-  let sst = 0;
+  const yMean = sumY / n;
+  let ssTot = 0;
+  let ssRes = 0;
   for (const [x, y] of pairs) {
-    const yHat = slope * x + intercept;
-    sse += (y - yHat) ** 2;
-    sst += (y - meanY) ** 2;
+    const yHat = m * x + b;
+    ssTot += (y - yMean) ** 2;
+    ssRes += (y - yHat) ** 2;
   }
-  const r2 =
-    sst === 0
-      ? sse === 0
-        ? 1
-        : 0
-      : 1 - sse / sst;
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : null;
 
   return {
-    slope,
-    intercept,
-    r2: Number.isFinite(r2) ? Math.max(0, Math.min(1, r2)) : null
+    m,
+    b,
+    r2: r2 != null && Number.isFinite(r2) ? Math.max(0, Math.min(1, r2)) : null
   };
 }
 
@@ -440,16 +431,7 @@ function Card({
 }
 
 // Different colors for multiple stocks
-const STOCK_COLORS = [
-  "#2563eb",
-  "#9333ea",
-  "#0f766e",
-  "#f59e0b",
-  "#ef4444",
-  "#16a34a",
-  "#db2777",
-  "#475569"
-];
+const STOCK_COLORS = ["#2563eb", "#9333ea", "#0f766e", "#f59e0b", "#ef4444", "#16a34a", "#db2777", "#475569"];
 function getStockColor(i: number) {
   return STOCK_COLORS[i % STOCK_COLORS.length];
 }
@@ -458,11 +440,7 @@ function getStockColor(i: number) {
    Component
 ----------------------------- */
 
-export default function RTMVsStocksDailyCard(props: {
-  rtmCsvUrl: string;
-  stockFileUrl: string;
-  rtmValueColumnKey: string;
-}) {
+export default function RTMVsStocksDailyCard(props: { rtmCsvUrl: string; stockFileUrl: string; rtmValueColumnKey: string }) {
   const { rtmCsvUrl, stockFileUrl, rtmValueColumnKey } = props;
 
   const [rtmMap, setRtmMap] = useState<Map<string, number>>(new Map());
@@ -485,8 +463,8 @@ export default function RTMVsStocksDailyCard(props: {
   const [fromIso, setFromIso] = useState<string>(""); // YYYY-MM-DD
   const [toIso, setToIso] = useState<string>(""); // YYYY-MM-DD
 
-  // ✅ Scatter options (shared state for the new card)
-  const [showScatterEqn, setShowScatterEqn] = useState<boolean>(false);
+  // ✅ Scatter option
+  const [showRegressionEquation, setShowRegressionEquation] = useState<boolean>(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -563,9 +541,7 @@ export default function RTMVsStocksDailyCard(props: {
 
     // from must be <= to
     const safeFrom =
-      fromIso && /^\d{4}-\d{2}-\d{2}$/.test(fromIso) && fromIso <= safeTo
-        ? fromIso
-        : isoMinusMonths(anchorDate, 24);
+      fromIso && /^\d{4}-\d{2}-\d{2}$/.test(fromIso) && fromIso <= safeTo ? fromIso : isoMinusMonths(anchorDate, 24);
 
     return { fromIso: safeFrom, toIso: safeTo };
   }, [anchorDate, fromIso, toIso]);
@@ -629,9 +605,7 @@ export default function RTMVsStocksDailyCard(props: {
 
   // RTM control lines computed on visible RTM series (already lagged)
   const rtmControl = useMemo(() => {
-    const vals = chartData
-      .map((r) => asFiniteNumber(r?.rtm))
-      .filter((x): x is number => x != null && Number.isFinite(x));
+    const vals = chartData.map((r) => asFiniteNumber(r?.rtm)).filter((x): x is number => x != null && Number.isFinite(x));
     if (!vals.length) return null;
 
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -641,7 +615,7 @@ export default function RTMVsStocksDailyCard(props: {
     return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
   }, [chartData]);
 
-  // Quick stats (+ ✅ correlation over visible chartData window)
+  // Quick stats (+ correlation over visible chartData window)
   const quickStats = useMemo(() => {
     if (!chartData.length) return null;
     const last = chartData[chartData.length - 1];
@@ -650,7 +624,7 @@ export default function RTMVsStocksDailyCard(props: {
     const stocks: Record<string, number | null> = {};
     for (const s of selectedStocks) stocks[s] = asFiniteNumber(last?.[s]);
 
-    // ✅ CORREL(RTM rolling, Stock rolling) over currently visible chartData range
+    // CORREL(RTM rolling, Stock rolling) over currently visible chartData range
     const corr: Record<string, number | null> = {};
     for (const s of selectedStocks) {
       const pairs: Array<[number, number]> = [];
@@ -694,24 +668,10 @@ export default function RTMVsStocksDailyCard(props: {
     return `${sign}${x.toFixed(2)}%`;
   };
 
-  // ✅ CORREL formatter as %
-  const fmtCorr = (x: number | null | undefined) => {
+  // ✅ CORREL formatted as % (e.g. 10.52%)
+  const fmtCorrPct = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
     return `${(x * 100).toFixed(2)}%`;
-  };
-
-  // ✅ R² formatter
-  const fmtR2 = (x: number | null | undefined) => {
-    if (x == null || Number.isNaN(x)) return "—";
-    return x.toFixed(2);
-  };
-
-  // ✅ Equation formatter
-  const fmtEqn = (slope: number, intercept: number) => {
-    const a = slope;
-    const b = intercept;
-    const sign = b >= 0 ? "+" : "-";
-    return `y = ${a.toFixed(4)}x ${sign} ${Math.abs(b).toFixed(4)}`;
   };
 
   const titleRight = anchorDate ? (
@@ -721,25 +681,17 @@ export default function RTMVsStocksDailyCard(props: {
     </div>
   ) : null;
 
-  // ✅ dotted control lines (as requested)
+  // dotted control lines
   const CONTROL_STROKE_WIDTH = 2.8;
-  const CONTROL_DASH = "3 4"; // dotted-ish
+  const CONTROL_DASH = "3 4";
   const lagClamped = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
 
   /* -----------------------------
-     ✅ Scatter data + regression
+     ✅ Scatter prep (shared state / same chartData)
   ----------------------------- */
 
-  type ScatterPoint = {
-    x: number;
-    y: number;
-    dateLabel: string;
-    __iso: string;
-    stock: string;
-  };
-
-  const scatterByStock = useMemo(() => {
-    const out: Record<string, ScatterPoint[]> = {};
+  const scatterSeries = useMemo(() => {
+    const out: Record<string, any[]> = {};
     for (const s of selectedStocks) out[s] = [];
 
     for (const row of chartData) {
@@ -749,399 +701,144 @@ export default function RTMVsStocksDailyCard(props: {
       for (const s of selectedStocks) {
         const y = asFiniteNumber(row?.[s]);
         if (y == null) continue;
-
         out[s].push({
           x,
           y,
-          dateLabel: row?.label ?? "—",
-          __iso: row?.__iso ?? "",
-          stock: s
+          __iso: row.__iso,
+          label: row.label,
+          rtm: x,
+          stock: y,
+          __stock: s
         });
       }
     }
-
     return out;
   }, [chartData, selectedStocks]);
 
-  const regressionByStock = useMemo(() => {
-    const out: Record<
-      string,
-      | {
-          slope: number;
-          intercept: number;
-          r2: number | null;
-          line: Array<{ x: number; y: number }>;
-        }
-      | null
-    > = {};
+  const scatterDomains = useMemo(() => {
+    let xMin = Number.POSITIVE_INFINITY;
+    let xMax = Number.NEGATIVE_INFINITY;
+    let yMin = Number.POSITIVE_INFINITY;
+    let yMax = Number.NEGATIVE_INFINITY;
 
     for (const s of selectedStocks) {
-      const pts = scatterByStock[s] || [];
-      const pairs: Array<[number, number]> = pts.map((p) => [p.x, p.y]);
-      const reg = linearRegressionPairs(pairs);
-      if (!reg) {
+      const pts = scatterSeries[s] || [];
+      for (const p of pts) {
+        if (Number.isFinite(p.x)) {
+          xMin = Math.min(xMin, p.x);
+          xMax = Math.max(xMax, p.x);
+        }
+        if (Number.isFinite(p.y)) {
+          yMin = Math.min(yMin, p.y);
+          yMax = Math.max(yMax, p.y);
+        }
+      }
+    }
+
+    if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) {
+      return { x: [0, 1] as [number, number], y: [0, 1] as [number, number] };
+    }
+
+    const xPad = Math.max(1e-9, Math.abs(xMax - xMin) * 0.05);
+    const yPad = Math.max(1e-9, Math.abs(yMax - yMin) * 0.05);
+
+    return {
+      x: [xMin - xPad, xMax + xPad] as [number, number],
+      y: [yMin - yPad, yMax + yPad] as [number, number]
+    };
+  }, [scatterSeries, selectedStocks]);
+
+  const regressionByStock = useMemo(() => {
+    const out: Record<string, { m: number; b: number; r2: number | null; line: Array<{ x: number; y: number }> } | null> = {};
+
+    for (const s of selectedStocks) {
+      const pts = scatterSeries[s] || [];
+      const pairs: Array<[number, number]> = pts.map((p) => [p.x, p.y]).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+      const fit = linearRegressionPairs(pairs);
+      if (!fit) {
         out[s] = null;
         continue;
       }
 
-      const xs = pts.map((p) => p.x);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-
-      // Handle degenerate
-      const a = reg.slope;
-      const b = reg.intercept;
-
-      const x1 = Number.isFinite(minX) ? minX : 0;
-      const x2 = Number.isFinite(maxX) ? maxX : x1 + 1;
-
+      const x0 = scatterDomains.x[0];
+      const x1 = scatterDomains.x[1];
       out[s] = {
-        slope: a,
-        intercept: b,
-        r2: reg.r2,
+        m: fit.m,
+        b: fit.b,
+        r2: fit.r2,
         line: [
-          { x: x1, y: a * x1 + b },
-          { x: x2, y: a * x2 + b }
+          { x: x0, y: fit.m * x0 + fit.b },
+          { x: x1, y: fit.m * x1 + fit.b }
         ]
       };
     }
 
     return out;
-  }, [selectedStocks, scatterByStock]);
+  }, [scatterSeries, selectedStocks, scatterDomains.x]);
 
-  const scatterDomains = useMemo(() => {
-    let minX = Infinity,
-      maxX = -Infinity,
-      minY = Infinity,
-      maxY = -Infinity;
+  const fmtR2 = (x: number | null | undefined) => {
+    if (x == null || Number.isNaN(x)) return "—";
+    return x.toFixed(2);
+  };
 
-    for (const s of selectedStocks) {
-      for (const p of scatterByStock[s] || []) {
-        if (p.x < minX) minX = p.x;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.y > maxY) maxY = p.y;
-      }
-    }
+  const fmtEq = (m: number, b: number) => {
+    const mStr = Number.isFinite(m) ? m.toFixed(2) : "—";
+    const bStr = Number.isFinite(b) ? Math.abs(b).toFixed(2) : "—";
+    const sign = b >= 0 ? "+" : "−";
+    return `y = ${mStr}x ${sign} ${bStr}`;
+  };
 
-    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
-      return {
-        x: [0, 1] as [number, number],
-        y: [0, 1] as [number, number]
-      };
-    }
+  // ✅ FIX: regression equation toggle actually affects tooltip content
+  const ScatterTooltip = ({ active, payload }: any) => {
+    if (!active || !payload?.length) return null;
 
-    const padX = maxX === minX ? 1 : Math.abs(maxX - minX) * 0.05;
-    const padY = maxY === minY ? 1 : Math.abs(maxY - minY) * 0.05;
+    // Recharts payload[0] contains the hovered point
+    const p = payload[0]?.payload;
+    if (!p) return null;
 
-    return {
-      x: [minX - padX, maxX + padX] as [number, number],
-      y: [minY - padY, maxY + padY] as [number, number]
-    };
-  }, [selectedStocks, scatterByStock]);
+    const stockName = p.__stock as string;
+    const fit = regressionByStock[stockName];
 
-  /* -----------------------------
-     Controls + Quick Stats block (reused in both cards)
-     (Same state shared; UI duplicated intentionally as requested)
-  ----------------------------- */
+    return (
+      <div className="rounded-xl bg-white p-3 text-sm text-slate-800 ring-1 ring-slate-200">
+        <div className="text-xs font-semibold text-slate-700">{stockName}</div>
+        <div className="mt-1 text-xs text-slate-500">Date: {p.label}</div>
 
-  const ControlsAndStats = (
-    <>
-      {/* Controls */}
-      <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-          <div className="flex-1">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div>
-                <div className="text-xs font-medium text-slate-600">Metric</div>
-                <select
-                  value={windowDays}
-                  onChange={(e) => setWindowDays(Number(e.target.value) as WindowDays)}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                >
-                  <option value={7}>Last 7 Days Rolling (AVG)</option>
-                  <option value={14}>Last 14 Days Rolling (AVG)</option>
-                  <option value={30}>Last 30 Days Rolling (AVG)</option>
-                  <option value={45}>Last 45 Days Rolling (AVG)</option>
-                </select>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-slate-600">Compare on</div>
-                <div className="mt-1 flex overflow-hidden rounded-xl ring-1 ring-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => setMode("price")}
-                    className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                      mode === "price" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    Stock Price
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMode("ptb")}
-                    className={`flex-1 px-3 py-2 text-sm font-semibold ${
-                      mode === "ptb" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    Price-to-Book
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-slate-600">Lag (days)</div>
-                <input
-                  type="number"
-                  min={0}
-                  max={365}
-                  step={1}
-                  value={lagClamped}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    const n = Math.floor(Number(raw));
-                    if (!Number.isFinite(n)) {
-                      setLagDays(0);
-                      return;
-                    }
-                    setLagDays(Math.max(0, Math.min(365, n)));
-                  }}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                />
-                <div className="mt-1 text-[11px] text-slate-500">
-                  RTM anchors to{" "}
-                  <span className="font-semibold">{range.toIso ? formatDDMMYYYY(rtmAnchor || range.toIso) : "—"}</span>{" "}
-                  (To − {lagClamped}d). Stocks anchor to To date.
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="sm:col-span-1">
-                <div className="text-xs font-medium text-slate-600">Preset range</div>
-                <select
-                  value={preset}
-                  onChange={(e) => setPreset(e.target.value as RangePreset)}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                >
-                  <option value="1m">1 month</option>
-                  <option value="3m">3 months</option>
-                  <option value="6m">6 months</option>
-                  <option value="12m">12 months</option>
-                  <option value="24m">24 months</option>
-                  <option value="36m">36 months</option>
-                  <option value="ytd">YTD</option>
-                  <option value="all">All time</option>
-                </select>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-slate-600">From</div>
-                <input
-                  type="date"
-                  value={fromIso}
-                  onChange={(e) => setFromIso(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                />
-                <div className="mt-1 text-[11px] text-slate-500">
-                  {fromIso ? <span className="font-semibold">{formatDDMMYY(fromIso)}</span> : null}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-slate-600">To</div>
-                <input
-                  type="date"
-                  value={toIso}
-                  onChange={(e) => setToIso(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                />
-                <div className="mt-1 text-[11px] text-slate-500">
-                  {toIso ? <span className="font-semibold">{formatDDMMYY(toIso)}</span> : null}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-4">
-              <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={showYoY}
-                  onChange={(e) => setShowYoY(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-                <span className="font-medium">Show YoY %</span>
-              </label>
-
-              <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={showRtmControlLines}
-                  onChange={(e) => setShowRtmControlLines(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-                <span className="font-medium">Show RTM control lines (Mean, ±1σ, ±2σ)</span>
-              </label>
-
-              <div className="text-xs text-slate-500">
-                Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days, lagged by{" "}
-                {lagClamped} days.
-              </div>
-            </div>
-
-            {quickStats ? (
-              <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-slate-200">
-                <div className="text-xs font-semibold text-slate-700">Quick stats (latest in range)</div>
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <div className="text-sm text-slate-700">
-                    <span className="text-slate-500">Chart date:</span>{" "}
-                    <span className="font-semibold">{quickStats.displayDate}</span>
-                    <div className="text-[11px] text-slate-500">
-                      RTM computed at: <span className="font-semibold">{quickStats.rtmDate}</span>
-                    </div>
-                  </div>
-
-                  <div className="text-sm text-slate-700">
-                    <span className="text-slate-500">RTM (rolling):</span>{" "}
-                    <span className="font-semibold">{fmtRtm(quickStats.rtm)}</span>
-
-                    {/* ✅ CORREL label only + % values for each selected stock */}
-                    {selectedStocks.length ? (
-                      <div className="mt-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-slate-500">CORREL</span>
-                          <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr?.[selectedStocks[0]])}</span>
-                        </div>
-
-                        {selectedStocks.slice(1).map((s) => (
-                          <div key={`${s}-corr`} className="mt-1 flex items-center justify-between gap-2">
-                            <span className="truncate text-slate-500">{s}</span>
-                            <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr?.[s])}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    {showYoY ? (
-                      <div className="text-[11px] text-slate-500">
-                        YoY: <span className="font-semibold">{fmtPct(quickStats.rtmYoY)}</span>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="text-sm text-slate-700">
-                    <span className="text-slate-500">Stocks (rolling):</span>
-                    <div className="mt-1 space-y-1">
-                      {selectedStocks.map((s) => (
-                        <div key={s} className="flex items-center justify-between gap-2">
-                          <span className="truncate">{s}</span>
-                          <span className="font-semibold tabular-nums">{fmtNum(quickStats.stocks[s])}</span>
-                        </div>
-                      ))}
-                    </div>
-                    {showYoY ? (
-                      <div className="mt-2 space-y-1 text-[11px] text-slate-500">
-                        {selectedStocks.map((s) => (
-                          <div key={`${s}-yoy`} className="flex items-center justify-between gap-2">
-                            <span className="truncate">{s} YoY</span>
-                            <span className="font-semibold tabular-nums">{fmtPct(quickStats.stocksYoY[s])}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            ) : null}
+        <div className="mt-2 space-y-1">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-slate-500">RTM (rolling)</span>
+            <span className="font-semibold tabular-nums">{fmtRtm(p.rtm)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-slate-500">Stock (rolling)</span>
+            <span className="font-semibold tabular-nums">{fmtNum(p.stock)}</span>
           </div>
 
-          <div className="lg:w-[360px] lg:shrink-0">
-            <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
-              <div className="text-xs font-semibold text-slate-700">Stocks</div>
-              <div className="mt-2 max-h-[220px] overflow-auto rounded-xl bg-white ring-1 ring-slate-200">
-                {stockUniverse.length ? (
-                  <div className="grid grid-cols-1 gap-2 p-2 text-[12px] text-slate-700">
-                    {stockUniverse.map((s) => {
-                      const checked = selectedStocks.includes(s);
-                      return (
-                        <label key={s} className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) => {
-                              const on = e.target.checked;
-                              setSelectedStocks((prev) => {
-                                if (on) return Array.from(new Set([...prev, s]));
-                                return prev.filter((x) => x !== s);
-                              });
-                            }}
-                            className="h-4 w-4 rounded border-slate-300"
-                          />
-                          <span className="font-medium">{s}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="p-3 text-sm text-slate-600">No columns found in active sheet.</div>
-                )}
+          {showRegressionEquation && fit ? (
+            <>
+              <div className="mt-2 border-t border-slate-100 pt-2" />
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-500">Equation</span>
+                <span className="font-semibold tabular-nums">{fmtEq(fit.m, fit.b)}</span>
               </div>
-
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedStocks(stockUniverse.slice(0, Math.min(1, stockUniverse.length)))}
-                  className="rounded-lg bg-slate-900 px-2 py-1 text-[12px] font-semibold text-white hover:bg-slate-800"
-                >
-                  Pick top 1
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedStocks(stockUniverse.slice(0, Math.min(2, stockUniverse.length)))}
-                  className="rounded-lg bg-white px-2 py-1 text-[12px] font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
-                >
-                  Pick top 2
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedStocks([])}
-                  className="rounded-lg bg-white px-2 py-1 text-[12px] font-semibold text-rose-700 ring-1 ring-slate-200 hover:bg-slate-50"
-                >
-                  Clear
-                </button>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-500">R²</span>
+                <span className="font-semibold tabular-nums">{fmtR2(fit.r2)}</span>
               </div>
-            </div>
-
-            {/* ✅ Scatter-only toggle (shared state) */}
-            <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-slate-200">
-              <div className="text-xs font-semibold text-slate-700">Scatter options</div>
-              <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={showScatterEqn}
-                  onChange={(e) => setShowScatterEqn(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-                <span className="font-medium">Show regression equation</span>
-              </label>
-              <div className="mt-1 text-[11px] text-slate-500">
-                When enabled, tooltip shows y = mx + b and R² for the hovered stock.
-              </div>
-            </div>
-          </div>
+            </>
+          ) : null}
         </div>
       </div>
-    </>
-  );
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-7xl px-4 py-8">
         <div className="mt-6 grid grid-cols-1 gap-4">
           {/* =========================
-              1) EXISTING DAILY CARD
-          ========================== */}
+              CARD 1: EXISTING LINE CARD
+             ========================= */}
           <Card title="RTM Vs Stocks (Daily Card)" right={titleRight}>
             {loading ? (
               <div className="text-sm text-slate-600">{loading}</div>
@@ -1151,8 +848,270 @@ export default function RTMVsStocksDailyCard(props: {
               <div className="text-sm text-slate-600">No stock data found (check stock.xlsx sheets & date column).</div>
             ) : (
               <>
-                {ControlsAndStats}
+                {/* Controls */}
+                <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+                    <div className="flex-1">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div>
+                          <div className="text-xs font-medium text-slate-600">Metric</div>
+                          <select
+                            value={windowDays}
+                            onChange={(e) => setWindowDays(Number(e.target.value) as WindowDays)}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                          >
+                            <option value={7}>Last 7 Days Rolling (AVG)</option>
+                            <option value={14}>Last 14 Days Rolling (AVG)</option>
+                            <option value={30}>Last 30 Days Rolling (AVG)</option>
+                            <option value={45}>Last 45 Days Rolling (AVG)</option>
+                          </select>
+                        </div>
 
+                        <div>
+                          <div className="text-xs font-medium text-slate-600">Compare on</div>
+                          <div className="mt-1 flex overflow-hidden rounded-xl ring-1 ring-slate-200">
+                            <button
+                              type="button"
+                              onClick={() => setMode("price")}
+                              className={`flex-1 px-3 py-2 text-sm font-semibold ${
+                                mode === "price" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              Stock Price
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMode("ptb")}
+                              className={`flex-1 px-3 py-2 text-sm font-semibold ${
+                                mode === "ptb" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              Price-to-Book
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-xs font-medium text-slate-600">Lag (days)</div>
+                          <input
+                            type="number"
+                            min={0}
+                            max={365}
+                            step={1}
+                            value={lagClamped}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const n = Math.floor(Number(raw));
+                              if (!Number.isFinite(n)) {
+                                setLagDays(0);
+                                return;
+                              }
+                              setLagDays(Math.max(0, Math.min(365, n)));
+                            }}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                          />
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            RTM anchors to{" "}
+                            <span className="font-semibold">{range.toIso ? formatDDMMYYYY(rtmAnchor || range.toIso) : "—"}</span>{" "}
+                            (To − {lagClamped}d). Stocks anchor to To date.
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div className="sm:col-span-1">
+                          <div className="text-xs font-medium text-slate-600">Preset range</div>
+                          <select
+                            value={preset}
+                            onChange={(e) => setPreset(e.target.value as RangePreset)}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                          >
+                            <option value="1m">1 month</option>
+                            <option value="3m">3 months</option>
+                            <option value="6m">6 months</option>
+                            <option value="12m">12 months</option>
+                            <option value="24m">24 months</option>
+                            <option value="36m">36 months</option>
+                            <option value="ytd">YTD</option>
+                            <option value="all">All time</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <div className="text-xs font-medium text-slate-600">From</div>
+                          <input
+                            type="date"
+                            value={fromIso}
+                            onChange={(e) => setFromIso(e.target.value)}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                          />
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            {fromIso ? <span className="font-semibold">{formatDDMMYY(fromIso)}</span> : null}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-xs font-medium text-slate-600">To</div>
+                          <input
+                            type="date"
+                            value={toIso}
+                            onChange={(e) => setToIso(e.target.value)}
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                          />
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            {toIso ? <span className="font-semibold">{formatDDMMYY(toIso)}</span> : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center gap-4">
+                        <label className="flex items-center gap-2 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={showYoY}
+                            onChange={(e) => setShowYoY(e.target.checked)}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                          <span className="font-medium">Show YoY %</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={showRtmControlLines}
+                            onChange={(e) => setShowRtmControlLines(e.target.checked)}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                          <span className="font-medium">Show RTM control lines (Mean, ±1σ, ±2σ)</span>
+                        </label>
+
+                        <div className="text-xs text-slate-500">
+                          Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days, lagged by {lagClamped} days.
+                        </div>
+                      </div>
+
+                      {quickStats ? (
+                        <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-slate-200">
+                          <div className="text-xs font-semibold text-slate-700">Quick stats (latest in range)</div>
+                          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                            <div className="text-sm text-slate-700">
+                              <span className="text-slate-500">Chart date:</span>{" "}
+                              <span className="font-semibold">{quickStats.displayDate}</span>
+                              <div className="text-[11px] text-slate-500">
+                                RTM computed at: <span className="font-semibold">{quickStats.rtmDate}</span>
+                              </div>
+                            </div>
+
+                            <div className="text-sm text-slate-700">
+                              <span className="text-slate-500">RTM (rolling):</span>{" "}
+                              <span className="font-semibold">{fmtRtm(quickStats.rtm)}</span>
+
+                              {/* ✅ FIX: CORREL label/value moved BELOW so it doesn't overlap RTM line */}
+                              {selectedStocks.length ? (
+                                <div className="mt-2 space-y-1">
+                                  {selectedStocks.map((s) => (
+                                    <div key={`${s}-corr`} className="flex items-center justify-between gap-3">
+                                      <span className="text-slate-500">CORREL</span>
+                                      <span className="font-semibold tabular-nums">{fmtCorrPct(quickStats.corr?.[s])}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+
+                              {showYoY ? (
+                                <div className="mt-2 text-[11px] text-slate-500">
+                                  YoY: <span className="font-semibold">{fmtPct(quickStats.rtmYoY)}</span>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="text-sm text-slate-700">
+                              <span className="text-slate-500">Stocks (rolling):</span>
+                              <div className="mt-1 space-y-1">
+                                {selectedStocks.map((s) => (
+                                  <div key={s} className="flex items-center justify-between gap-2">
+                                    <span className="truncate">{s}</span>
+                                    <span className="font-semibold tabular-nums">{fmtNum(quickStats.stocks[s])}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              {showYoY ? (
+                                <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+                                  {selectedStocks.map((s) => (
+                                    <div key={`${s}-yoy`} className="flex items-center justify-between gap-2">
+                                      <span className="truncate">{s} YoY</span>
+                                      <span className="font-semibold tabular-nums">{fmtPct(quickStats.stocksYoY[s])}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="lg:w-[360px] lg:shrink-0">
+                      <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
+                        <div className="text-xs font-semibold text-slate-700">Stocks</div>
+                        <div className="mt-2 max-h-[220px] overflow-auto rounded-xl bg-white ring-1 ring-slate-200">
+                          {stockUniverse.length ? (
+                            <div className="grid grid-cols-1 gap-2 p-2 text-[12px] text-slate-700">
+                              {stockUniverse.map((s) => {
+                                const checked = selectedStocks.includes(s);
+                                return (
+                                  <label key={s} className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={(e) => {
+                                        const on = e.target.checked;
+                                        setSelectedStocks((prev) => {
+                                          if (on) return Array.from(new Set([...prev, s]));
+                                          return prev.filter((x) => x !== s);
+                                        });
+                                      }}
+                                      className="h-4 w-4 rounded border-slate-300"
+                                    />
+                                    <span className="font-medium">{s}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="p-3 text-sm text-slate-600">No columns found in active sheet.</div>
+                          )}
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedStocks(stockUniverse.slice(0, Math.min(1, stockUniverse.length)))}
+                            className="rounded-lg bg-slate-900 px-2 py-1 text-[12px] font-semibold text-white hover:bg-slate-800"
+                          >
+                            Pick top 1
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedStocks(stockUniverse.slice(0, Math.min(2, stockUniverse.length)))}
+                            className="rounded-lg bg-white px-2 py-1 text-[12px] font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                          >
+                            Pick top 2
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedStocks([])}
+                            className="rounded-lg bg-white px-2 py-1 text-[12px] font-semibold text-rose-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Line chart */}
                 <div className="h-[380px] sm:h-[480px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 12, right: 42, bottom: 12, left: 42 }}>
@@ -1245,7 +1204,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#000000"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p1}
@@ -1260,7 +1218,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#f97316"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p2}
@@ -1275,7 +1232,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#16a34a"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m1}
@@ -1290,7 +1246,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#b45309"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m2}
@@ -1360,9 +1315,9 @@ export default function RTMVsStocksDailyCard(props: {
           </Card>
 
           {/* =========================
-              2) NEW SECOND DAILY CARD (SCATTER)
-          ========================== */}
-          <Card title="RTM Vs Stocks (Daily Card – Scatter)" right={titleRight}>
+              CARD 2: SCATTER CARD (shared state)
+             ========================= */}
+          <Card title="RTM Vs Stocks (Scatter)" right={titleRight}>
             {loading ? (
               <div className="text-sm text-slate-600">{loading}</div>
             ) : err ? (
@@ -1371,32 +1326,57 @@ export default function RTMVsStocksDailyCard(props: {
               <div className="text-sm text-slate-600">No stock data found (check stock.xlsx sheets & date column).</div>
             ) : (
               <>
-                {ControlsAndStats}
+                {/* SAME controls/state — only add scatter option box */}
+                <div className="mb-3 rounded-2xl bg-slate-50 p-2 ring-1 ring-slate-200">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+                    <div className="flex-1">
+                      <div className="text-xs text-slate-500">
+                        Uses the same date range, rolling window, lag, and selected stocks as the line chart above.
+                      </div>
+                    </div>
 
-                <div className="h-[380px] sm:h-[480px]">
+                    <div className="lg:w-[360px] lg:shrink-0">
+                      <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200">
+                        <div className="text-xs font-semibold text-slate-700">Scatter options</div>
+                        <label className="mt-2 flex items-start gap-2 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={showRegressionEquation}
+                            onChange={(e) => setShowRegressionEquation(e.target.checked)}
+                            className="mt-1 h-4 w-4 rounded border-slate-300"
+                          />
+                          <div>
+                            <div className="font-medium">Show regression equation</div>
+                            <div className="text-[12px] text-slate-500">
+                              When enabled, tooltip shows y = mx + b and R² for the hovered stock.
+                            </div>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Scatter */}
+                <div className="h-[420px] sm:h-[520px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart margin={{ top: 12, right: 42, bottom: 20, left: 42 }}>
+                    <ScatterChart margin={{ top: 12, right: 42, bottom: 22, left: 42 }}>
                       <CartesianGrid strokeDasharray="3 3" />
 
                       <XAxis
                         type="number"
                         dataKey="x"
-                        name="RTM (rolling)"
+                        name="RTM"
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
                         domain={scatterDomains.x}
-                        label={{
-                          value: `RTM (rolling) ₹/unit${lagClamped ? ` (lag ${lagClamped}d)` : ""}`,
-                          position: "insideBottom",
-                          offset: -10,
-                          fontSize: 12
-                        }}
+                        label={{ value: "RTM (rolling) ₹/unit", position: "insideBottom", offset: -8, fontSize: 12 }}
                       />
 
                       <YAxis
                         type="number"
                         dataKey="y"
-                        name="Stock (rolling)"
+                        name="Stock"
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtNum(asFiniteNumber(v))}
                         domain={scatterDomains.y}
@@ -1408,86 +1388,57 @@ export default function RTMVsStocksDailyCard(props: {
                         }}
                       />
 
-                      <Tooltip
-                        wrapperStyle={{ outline: "none" }}
-                        content={({ active, payload }) => {
-                          if (!active || !payload || !payload.length) return null;
-
-                          const p: any = payload[0]?.payload;
-                          const stockName: string = p?.stock || "";
-                          const reg = stockName ? regressionByStock[stockName] : null;
-
+                      <Tooltip content={<ScatterTooltip />} />
+                      <Legend
+                        formatter={(value: any) => {
+                          const s = String(value);
+                          const fit = regressionByStock[s];
+                          const r2 = fit?.r2;
+                          // ✅ tiny right-shift for the R² part (visual spacing)
                           return (
-                            <div className="rounded-xl bg-white p-3 text-xs text-slate-700 shadow-md ring-1 ring-slate-200">
-                              <div className="font-semibold">Date: {p?.dateLabel ?? "—"}</div>
-                              <div className="mt-1">
-                                <span className="text-slate-500">RTM (X):</span>{" "}
-                                <span className="font-semibold">{fmtRtm(asFiniteNumber(p?.x))}</span>
-                              </div>
-                              <div className="mt-1">
-                                <span className="text-slate-500">{stockName} (Y):</span>{" "}
-                                <span className="font-semibold">{fmtNum(asFiniteNumber(p?.y))}</span>
-                              </div>
-
-                              {showScatterEqn && reg ? (
-                                <div className="mt-2 rounded-lg bg-slate-50 p-2 ring-1 ring-slate-200">
-                                  <div className="text-slate-500">Regression</div>
-                                  <div className="font-semibold">{fmtEqn(reg.slope, reg.intercept)}</div>
-                                  <div className="mt-1">
-                                    <span className="text-slate-500">R²:</span>{" "}
-                                    <span className="font-semibold">{fmtR2(reg.r2)}</span>
-                                  </div>
-                                </div>
-                              ) : null}
-                            </div>
+                            <span>
+                              {s}
+                              <span className="ml-2">{`(R² = ${fmtR2(r2)})`}</span>
+                            </span>
                           );
                         }}
                       />
 
-                      <Legend
-                        formatter={(value: any) => {
-                          const s = String(value);
-                          const reg = regressionByStock[s];
-                          if (reg && reg.r2 != null) return `${s} (R² = ${fmtR2(reg.r2)})`;
-                          return s;
-                        }}
-                      />
-
-                      {/* Scatter series per stock */}
-                      {selectedStocks.map((s, i) => (
-                        <Scatter
-                          key={`sc-${s}`}
-                          name={s}
-                          data={scatterByStock[s] || []}
-                          fill={getStockColor(i)}
-                        />
-                      ))}
-
-                      {/* Trend lines per stock (same color, no legend) */}
+                      {/* regression lines (as 2-point scatter series with "line") */}
                       {selectedStocks.map((s, i) => {
-                        const reg = regressionByStock[s];
-                        if (!reg || !reg.line?.length) return null;
+                        const fit = regressionByStock[s];
+                        if (!fit) return null;
                         return (
-                          <Line
-                            key={`tl-${s}`}
-                            type="linear"
-                            data={reg.line}
-                            dataKey="y"
-                            dot={false}
-                            strokeWidth={2}
+                          <Scatter
+                            key={`${s}-reg`}
+                            name={`${s}__reg_hidden`}
+                            data={fit.line}
+                            line={{ strokeWidth: 2 }}
                             stroke={getStockColor(i)}
+                            fill={getStockColor(i)}
+                            shape={() => null}
                             legendType="none"
-                            isAnimationActive={false}
                           />
                         );
                       })}
+
+                      {/* dots */}
+                      {selectedStocks.map((s, i) => (
+                        <Scatter
+                          key={s}
+                          name={s}
+                          data={scatterSeries[s] || []}
+                          fill={getStockColor(i)}
+                          stroke={getStockColor(i)}
+                        />
+                      ))}
                     </ScatterChart>
                   </ResponsiveContainer>
                 </div>
 
                 <div className="mt-2 text-[11px] text-slate-500">
-                  Each dot is one date in the selected range. X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling
-                  ({mode === "price" ? "Price" : "P/B"}). Trend lines are linear best-fit lines; legend shows R².
+                  Each dot is one date in the selected range. X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling (
+                  {mode === "price" ? "Price" : "P/B"}). Trend lines are linear best-fit lines; legend shows R².
                 </div>
               </>
             )}
