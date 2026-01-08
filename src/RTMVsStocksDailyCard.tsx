@@ -1375,7 +1375,8 @@ export default function RTMVsStocksDailyCard(props: {
 
                 <div className="h-[380px] sm:h-[480px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart margin={{ top: 12, right: 42, bottom: 20, left: 42 }}>
+                    {/* ✅ extra bottom space so Legend doesn't cover X-axis label */}
+                    <ScatterChart margin={{ top: 12, right: 42, bottom: 44, left: 42 }}>
                       <CartesianGrid strokeDasharray="3 3" />
 
                       <XAxis
@@ -1413,19 +1414,25 @@ export default function RTMVsStocksDailyCard(props: {
                         content={({ active, payload }) => {
                           if (!active || !payload || !payload.length) return null;
 
-                          const p: any = payload[0]?.payload;
+                          // ✅ Robust: pick the hovered scatter point payload (Recharts can send multiple payload items)
+                          const hovered = (payload as any[]).find((it: any) => it?.payload?.stock) || payload[0];
+                          const p: any = (hovered as any)?.payload;
+
                           const stockName: string = p?.stock || "";
                           const reg = stockName ? regressionByStock[stockName] : null;
 
                           return (
                             <div className="rounded-xl bg-white p-3 text-xs text-slate-700 shadow-md ring-1 ring-slate-200">
-                              <div className="font-semibold">Date: {p?.dateLabel ?? "—"}</div>
+                              <div className="font-semibold">
+                                {stockName ? `${stockName} · ` : ""}
+                                Date: {p?.dateLabel ?? "—"}
+                              </div>
                               <div className="mt-1">
                                 <span className="text-slate-500">RTM (X):</span>{" "}
                                 <span className="font-semibold">{fmtRtm(asFiniteNumber(p?.x))}</span>
                               </div>
                               <div className="mt-1">
-                                <span className="text-slate-500">{stockName} (Y):</span>{" "}
+                                <span className="text-slate-500">{stockName || "Stock"} (Y):</span>{" "}
                                 <span className="font-semibold">{fmtNum(asFiniteNumber(p?.y))}</span>
                               </div>
 
@@ -1445,6 +1452,9 @@ export default function RTMVsStocksDailyCard(props: {
                       />
 
                       <Legend
+                        verticalAlign="bottom"
+                        align="center"
+                        wrapperStyle={{ paddingTop: 10, transform: "translateY(12px)" }}
                         formatter={(value: any) => {
                           const s = String(value);
                           const reg = regressionByStock[s];
@@ -1453,17 +1463,32 @@ export default function RTMVsStocksDailyCard(props: {
                         }}
                       />
 
+                      {/* ✅ Trend lines per stock (dashed) */}
+                      {selectedStocks.map((s, i) => {
+                        const reg = regressionByStock[s];
+                        if (!reg || !reg.line?.length) return null;
+
+                        const p1 = reg.line[0];
+                        const p2 = reg.line[1];
+
+                        return (
+                          <ReferenceLine
+                            key={`ref-tl-${s}`}
+                            segment={[{ x: p1.x, y: p1.y }, { x: p2.x, y: p2.y }]}
+                            stroke={getStockColor(i)}
+                            strokeWidth={2}
+                            strokeDasharray="6 6"   // ✅ dashed trendline
+                            ifOverflow="extendDomain"
+                          />
+                        );
+                      })}
+
                       {/* Scatter series per stock */}
                       {selectedStocks.map((s, i) => (
-                        <Scatter
-                          key={`sc-${s}`}
-                          name={s}
-                          data={scatterByStock[s] || []}
-                          fill={getStockColor(i)}
-                        />
+                        <Scatter key={`sc-${s}`} name={s} data={scatterByStock[s] || []} fill={getStockColor(i)} />
                       ))}
 
-                      {/* Trend lines per stock (same color, no legend) */}
+                      {/* (kept) Old Line trend attempt - harmless, but ReferenceLine above is the real trendline */}
                       {selectedStocks.map((s, i) => {
                         const reg = regressionByStock[s];
                         if (!reg || !reg.line?.length) return null;
@@ -1486,8 +1511,8 @@ export default function RTMVsStocksDailyCard(props: {
                 </div>
 
                 <div className="mt-2 text-[11px] text-slate-500">
-                  Each dot is one date in the selected range. X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling
-                  ({mode === "price" ? "Price" : "P/B"}). Trend lines are linear best-fit lines; legend shows R².
+                  Each dot is one date in the selected range. X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling (
+                  {mode === "price" ? "Price" : "P/B"}). Trend lines are linear best-fit lines; legend shows R².
                 </div>
               </>
             )}
