@@ -210,6 +210,39 @@ function parseRtmCsv(text: string, valueColumnKey: string) {
 }
 
 /* -----------------------------
+   ✅ ADD: Pearson correlation helper (Excel CORREL)
+----------------------------- */
+
+function pearsonCorrPairs(pairs: Array<[number, number]>) {
+  const n = pairs.length;
+  if (n < 2) return null;
+
+  let sumX = 0,
+    sumY = 0,
+    sumXX = 0,
+    sumYY = 0,
+    sumXY = 0;
+
+  for (const [x, y] of pairs) {
+    sumX += x;
+    sumY += y;
+    sumXX += x * x;
+    sumYY += y * y;
+    sumXY += x * y;
+  }
+
+  const num = n * sumXY - sumX * sumY;
+  const denX = n * sumXX - sumX * sumX;
+  const denY = n * sumYY - sumY * sumY;
+  const den = Math.sqrt(Math.max(0, denX) * Math.max(0, denY));
+
+  if (!Number.isFinite(den) || den === 0) return null;
+
+  const r = num / den;
+  return Number.isFinite(r) ? Math.max(-1, Math.min(1, r)) : null;
+}
+
+/* -----------------------------
    XLSX load
 ----------------------------- */
 
@@ -554,7 +587,7 @@ export default function RTMVsStocksDailyCard(props: {
     return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
   }, [chartData]);
 
-  // Quick stats
+  // Quick stats (+ ✅ correlation over visible chartData window)
   const quickStats = useMemo(() => {
     if (!chartData.length) return null;
     const last = chartData[chartData.length - 1];
@@ -562,6 +595,19 @@ export default function RTMVsStocksDailyCard(props: {
     const rtm = asFiniteNumber(last?.rtm);
     const stocks: Record<string, number | null> = {};
     for (const s of selectedStocks) stocks[s] = asFiniteNumber(last?.[s]);
+
+    // ✅ CORREL(RTM rolling, Stock rolling) over currently visible chartData range
+    const corr: Record<string, number | null> = {};
+    for (const s of selectedStocks) {
+      const pairs: Array<[number, number]> = [];
+      for (const row of chartData) {
+        const x = asFiniteNumber(row?.rtm);
+        const y = asFiniteNumber(row?.[s]);
+        if (x == null || y == null) continue;
+        pairs.push([x, y]);
+      }
+      corr[s] = pearsonCorrPairs(pairs);
+    }
 
     const rtmYoY = asFiniteNumber(last?.rtm_yoy);
     const stocksYoY: Record<string, number | null> = {};
@@ -572,6 +618,7 @@ export default function RTMVsStocksDailyCard(props: {
       rtmDate: last?.__rtmIso ? formatDDMMYYYY(last.__rtmIso) : "—",
       rtm,
       stocks,
+      corr,
       rtmYoY,
       stocksYoY
     };
@@ -591,6 +638,12 @@ export default function RTMVsStocksDailyCard(props: {
     if (x == null || Number.isNaN(x)) return "—";
     const sign = x > 0 ? "+" : "";
     return `${sign}${x.toFixed(2)}%`;
+  };
+
+  // ✅ ADD: correlation formatter
+  const fmtCorr = (x: number | null | undefined) => {
+    if (x == null || Number.isNaN(x)) return "—";
+    return x.toFixed(2);
   };
 
   const titleRight = anchorDate ? (
@@ -777,6 +830,17 @@ export default function RTMVsStocksDailyCard(props: {
                             <div className="text-sm text-slate-700">
                               <span className="text-slate-500">RTM (rolling):</span>{" "}
                               <span className="font-semibold">{fmtRtm(quickStats.rtm)}</span>
+
+                              {/* ✅ ADD: correlation under RTM block */}
+                              <div className="mt-1 space-y-1 text-[11px] text-slate-500">
+                                {selectedStocks.map((s) => (
+                                  <div key={`${s}-corr`} className="flex items-center justify-between gap-2">
+                                    <span className="truncate">{s} CORREL</span>
+                                    <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr?.[s])}</span>
+                                  </div>
+                                ))}
+                              </div>
+
                               {showYoY ? (
                                 <div className="text-[11px] text-slate-500">
                                   YoY: <span className="font-semibold">{fmtPct(quickStats.rtmYoY)}</span>
@@ -962,7 +1026,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#000000"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p1}
@@ -977,7 +1040,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#f97316"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p2}
@@ -992,7 +1054,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#16a34a"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m1}
@@ -1007,7 +1068,6 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#b45309"
                             }}
                           />
-
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m2}
