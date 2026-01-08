@@ -581,7 +581,8 @@ export default function RTMVsStocksDailyCard(props: {
     if (!vals.length) return null;
 
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const variance = vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (vals.length - 1) : 0;
+    const variance =
+      vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (vals.length - 1) : 0;
     const sd = Math.sqrt(Math.max(0, variance));
 
     return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
@@ -640,10 +641,10 @@ export default function RTMVsStocksDailyCard(props: {
     return `${sign}${x.toFixed(2)}%`;
   };
 
-  // ✅ ADD: correlation formatter
+  // ✅ correlation formatter as %
   const fmtCorr = (x: number | null | undefined) => {
     if (x == null || Number.isNaN(x)) return "—";
-    return x.toFixed(2);
+    return `${(x * 100).toFixed(2)}%`;
   };
 
   const titleRight = anchorDate ? (
@@ -811,7 +812,8 @@ export default function RTMVsStocksDailyCard(props: {
                         </label>
 
                         <div className="text-xs text-slate-500">
-                          Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days, lagged by {lagClamped} days.
+                          Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days,
+                          lagged by {lagClamped} days.
                         </div>
                       </div>
 
@@ -831,15 +833,24 @@ export default function RTMVsStocksDailyCard(props: {
                               <span className="text-slate-500">RTM (rolling):</span>{" "}
                               <span className="font-semibold">{fmtRtm(quickStats.rtm)}</span>
 
-                              {/* ✅ ADD: correlation under RTM block */}
-                              <div className="mt-1 space-y-1 text-[11px] text-slate-500">
-                                {selectedStocks.map((s) => (
-                                  <div key={`${s}-corr`} className="flex items-center justify-between gap-2">
-                                    <span className="truncate">{s} CORREL</span>
-                                    <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr?.[s])}</span>
+                              {/* ✅ CORREL label only + correlations for EACH selected stock */}
+                              {selectedStocks.length ? (
+                                <div className="mt-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-slate-500">CORREL</span>
+                                    <span className="font-semibold tabular-nums">
+                                      {fmtCorr(quickStats.corr?.[selectedStocks[0]])}
+                                    </span>
                                   </div>
-                                ))}
-                              </div>
+
+                                  {selectedStocks.slice(1).map((s) => (
+                                    <div key={`${s}-corr`} className="mt-1 flex items-center justify-between gap-2">
+                                      <span className="truncate text-slate-500">{s}</span>
+                                      <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr?.[s])}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
 
                               {showYoY ? (
                                 <div className="text-[11px] text-slate-500">
@@ -948,7 +959,10 @@ export default function RTMVsStocksDailyCard(props: {
                         tickFormatter={(v) => {
                           const n = asFiniteNumber(v);
                           if (n == null) return "—";
-                          return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n);
+                          return new Intl.NumberFormat("en-IN", {
+                            maximumFractionDigits: 2,
+                            minimumFractionDigits: 2
+                          }).format(n);
                         }}
                         domain={[
                           (dataMin: number) => {
@@ -991,7 +1005,8 @@ export default function RTMVsStocksDailyCard(props: {
                           const key = (item && (item.dataKey as string)) || (name as string);
                           const num = asFiniteNumber(v);
 
-                          if (key === "rtm") return [`${fmtRtm(num)} Rs/Unit`, `RTM (rolling avg, lag ${lagClamped}d)`];
+                          if (key === "rtm")
+                            return [`${fmtRtm(num)} Rs/Unit`, `RTM (rolling avg, lag ${lagClamped}d)`];
                           if (key === "rtm_yoy") return [fmtPct(num), "RTM YoY %"];
 
                           if (key.endsWith("_yoy")) {
@@ -1026,6 +1041,7 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#000000"
                             }}
                           />
+
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p1}
@@ -1040,6 +1056,7 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#f97316"
                             }}
                           />
+
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.p2}
@@ -1054,6 +1071,7 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#16a34a"
                             }}
                           />
+
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m1}
@@ -1068,6 +1086,7 @@ export default function RTMVsStocksDailyCard(props: {
                               fill: "#b45309"
                             }}
                           />
+
                           <ReferenceLine
                             yAxisId="left"
                             y={rtmControl.m2}
