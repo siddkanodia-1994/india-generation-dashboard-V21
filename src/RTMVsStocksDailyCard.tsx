@@ -335,7 +335,12 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
   function parseSheet(sheetName: string | undefined) {
     if (!sheetName) {
-      return { dates: [] as string[], cols: [] as string[], values: new Map(), latestDate: null as string | null };
+      return {
+        dates: [] as string[],
+        cols: [] as string[],
+        values: new Map(),
+        latestDate: null as string | null
+      };
     }
 
     const ws = wb.Sheets[sheetName];
@@ -440,16 +445,7 @@ function Card({
 }
 
 // Different colors for multiple stocks
-const STOCK_COLORS = [
-  "#2563eb",
-  "#9333ea",
-  "#0f766e",
-  "#f59e0b",
-  "#ef4444",
-  "#16a34a",
-  "#db2777",
-  "#475569"
-];
+const STOCK_COLORS = ["#2563eb", "#9333ea", "#0f766e", "#f59e0b", "#ef4444", "#16a34a", "#db2777", "#475569"];
 function getStockColor(i: number) {
   return STOCK_COLORS[i % STOCK_COLORS.length];
 }
@@ -458,11 +454,7 @@ function getStockColor(i: number) {
    Component
 ----------------------------- */
 
-export default function RTMVsStocksDailyCard(props: {
-  rtmCsvUrl: string;
-  stockFileUrl: string;
-  rtmValueColumnKey: string;
-}) {
+export default function RTMVsStocksDailyCard(props: { rtmCsvUrl: string; stockFileUrl: string; rtmValueColumnKey: string }) {
   const { rtmCsvUrl, stockFileUrl, rtmValueColumnKey } = props;
 
   const [rtmMap, setRtmMap] = useState<Map<string, number>>(new Map());
@@ -487,6 +479,9 @@ export default function RTMVsStocksDailyCard(props: {
 
   // ✅ Scatter options (shared state for the new card)
   const [showScatterEqn, setShowScatterEqn] = useState<boolean>(false);
+
+  // ✅ ADD: Log toggle (applies to BOTH charts)
+  const [useLogScale, setUseLogScale] = useState<boolean>(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -563,9 +558,7 @@ export default function RTMVsStocksDailyCard(props: {
 
     // from must be <= to
     const safeFrom =
-      fromIso && /^\d{4}-\d{2}-\d{2}$/.test(fromIso) && fromIso <= safeTo
-        ? fromIso
-        : isoMinusMonths(anchorDate, 24);
+      fromIso && /^\d{4}-\d{2}-\d{2}$/.test(fromIso) && fromIso <= safeTo ? fromIso : isoMinusMonths(anchorDate, 24);
 
     return { fromIso: safeFrom, toIso: safeTo };
   }, [anchorDate, fromIso, toIso]);
@@ -706,12 +699,22 @@ export default function RTMVsStocksDailyCard(props: {
     return x.toFixed(2);
   };
 
-  // ✅ Equation formatter
+  // ✅ Equation formatter (linear)
   const fmtEqn = (slope: number, intercept: number) => {
     const a = slope;
     const b = intercept;
     const sign = b >= 0 ? "+" : "-";
     return `y = ${a.toFixed(4)}x ${sign} ${Math.abs(b).toFixed(4)}`;
+  };
+
+  // ✅ ADD: Log equation formatter
+  const fmtLogEqn = (slope: number, intercept: number) => {
+    const sign = intercept >= 0 ? "+" : "-";
+    const A = Math.exp(intercept);
+    return {
+      lnForm: `ln(y) = ${slope.toFixed(4)} ln(x) ${sign} ${Math.abs(intercept).toFixed(4)}`,
+      powForm: `y = ${A.toFixed(4)} x^${slope.toFixed(4)}`
+    };
   };
 
   const titleRight = anchorDate ? (
@@ -725,6 +728,9 @@ export default function RTMVsStocksDailyCard(props: {
   const CONTROL_STROKE_WIDTH = 2.8;
   const CONTROL_DASH = "3 4"; // dotted-ish
   const lagClamped = Math.max(0, Math.min(365, Math.floor(Number(lagDays) || 0)));
+
+  // ✅ ADD: log-safe minimum clamp
+  const LOG_EPS = 1e-6;
 
   /* -----------------------------
      ✅ Scatter data + regression
@@ -770,13 +776,64 @@ export default function RTMVsStocksDailyCard(props: {
           slope: number;
           intercept: number;
           r2: number | null;
+          // For plotting: if log => curve points; else => 2 points
           line: Array<{ x: number; y: number }>;
+          __isLog: boolean;
         }
       | null
     > = {};
 
     for (const s of selectedStocks) {
       const pts = scatterByStock[s] || [];
+
+      // ✅ If log scale: regress on ln(x), ln(y) and generate a curve in (x,y)
+      if (useLogScale) {
+        const logPairs: Array<[number, number]> = [];
+        const xs: number[] = [];
+
+        for (const p of pts) {
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+          if (p.x <= 0 || p.y <= 0) continue; // log needs positive
+          logPairs.push([Math.log(p.x), Math.log(p.y)]);
+          xs.push(p.x);
+        }
+
+        const regLog = linearRegressionPairs(logPairs);
+        if (!regLog || !xs.length) {
+          out[s] = null;
+          continue;
+        }
+
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const x1 = Math.max(LOG_EPS, Number.isFinite(minX) ? minX : LOG_EPS);
+        const x2 = Math.max(x1 * 1.0001, Number.isFinite(maxX) ? maxX : x1 * 10);
+
+        // create curve points (log-spaced)
+        const steps = 36;
+        const ln1 = Math.log(x1);
+        const ln2 = Math.log(x2);
+        const curve: Array<{ x: number; y: number }> = [];
+        for (let i = 0; i < steps; i++) {
+          const t = steps === 1 ? 0 : i / (steps - 1);
+          const lnx = ln1 + (ln2 - ln1) * t;
+          const x = Math.exp(lnx);
+          const lny = regLog.slope * lnx + regLog.intercept;
+          const y = Math.exp(lny);
+          curve.push({ x, y });
+        }
+
+        out[s] = {
+          slope: regLog.slope,
+          intercept: regLog.intercept,
+          r2: regLog.r2,
+          line: curve,
+          __isLog: true
+        };
+        continue;
+      }
+
+      // ✅ Linear regression in original space (existing behavior)
       const pairs: Array<[number, number]> = pts.map((p) => [p.x, p.y]);
       const reg = linearRegressionPairs(pairs);
       if (!reg) {
@@ -788,7 +845,6 @@ export default function RTMVsStocksDailyCard(props: {
       const minX = Math.min(...xs);
       const maxX = Math.max(...xs);
 
-      // Handle degenerate
       const a = reg.slope;
       const b = reg.intercept;
 
@@ -802,12 +858,13 @@ export default function RTMVsStocksDailyCard(props: {
         line: [
           { x: x1, y: a * x1 + b },
           { x: x2, y: a * x2 + b }
-        ]
+        ],
+        __isLog: false
       };
     }
 
     return out;
-  }, [selectedStocks, scatterByStock]);
+  }, [selectedStocks, scatterByStock, useLogScale]);
 
   const scatterDomains = useMemo(() => {
     let minX = Infinity,
@@ -817,6 +874,13 @@ export default function RTMVsStocksDailyCard(props: {
 
     for (const s of selectedStocks) {
       for (const p of scatterByStock[s] || []) {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+
+        if (useLogScale) {
+          // log needs positive
+          if (p.x <= 0 || p.y <= 0) continue;
+        }
+
         if (p.x < minX) minX = p.x;
         if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y;
@@ -825,9 +889,21 @@ export default function RTMVsStocksDailyCard(props: {
     }
 
     if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+      return { x: [1, 10] as [number, number], y: [1, 10] as [number, number] };
+    }
+
+    if (useLogScale) {
+      const x1 = Math.max(LOG_EPS, minX);
+      const x2 = Math.max(x1 * 1.0001, maxX);
+      const y1 = Math.max(LOG_EPS, minY);
+      const y2 = Math.max(y1 * 1.0001, maxY);
+
+      // multiplicative padding (±5% in log space)
+      const padMul = 1.05;
+
       return {
-        x: [0, 1] as [number, number],
-        y: [0, 1] as [number, number]
+        x: [x1 / padMul, x2 * padMul] as [number, number],
+        y: [y1 / padMul, y2 * padMul] as [number, number]
       };
     }
 
@@ -838,7 +914,33 @@ export default function RTMVsStocksDailyCard(props: {
       x: [minX - padX, maxX + padX] as [number, number],
       y: [minY - padY, maxY + padY] as [number, number]
     };
-  }, [selectedStocks, scatterByStock]);
+  }, [selectedStocks, scatterByStock, useLogScale]);
+
+  // ✅ ADD: helper for LINE chart log domains (separate left/right)
+  const lineLogDomains = useMemo(() => {
+    const rtmVals: number[] = [];
+    const stockVals: number[] = [];
+
+    for (const row of chartData) {
+      const xr = asFiniteNumber(row?.rtm);
+      if (xr != null && Number.isFinite(xr) && xr > 0) rtmVals.push(xr);
+
+      for (const s of selectedStocks) {
+        const y = asFiniteNumber(row?.[s]);
+        if (y != null && Number.isFinite(y) && y > 0) stockVals.push(y);
+      }
+    }
+
+    function mk(vals: number[]) {
+      if (!vals.length) return { min: 1, max: 10 };
+      const mn = Math.max(LOG_EPS, Math.min(...vals));
+      const mx = Math.max(mn * 1.0001, Math.max(...vals));
+      const padMul = 1.05;
+      return { min: mn / padMul, max: mx * padMul };
+    }
+
+    return { rtm: mk(rtmVals), stock: mk(stockVals) };
+  }, [chartData, selectedStocks]);
 
   /* -----------------------------
      Controls + Quick Stats block (reused in both cards)
@@ -984,10 +1086,26 @@ export default function RTMVsStocksDailyCard(props: {
                 <span className="font-medium">Show RTM control lines (Mean, ±1σ, ±2σ)</span>
               </label>
 
+              {/* ✅ ADD: Log toggle */}
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={useLogScale}
+                  onChange={(e) => setUseLogScale(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                <span className="font-medium">Log scale (axes)</span>
+              </label>
+
               <div className="text-xs text-slate-500">
-                Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days, lagged by{" "}
-                {lagClamped} days.
+                Stocks rolling uses last {windowDays} available trading days. RTM rolling uses calendar days, lagged by {lagClamped} days.
               </div>
+
+              {useLogScale ? (
+                <div className="text-[11px] text-slate-500">
+                  Log scale requires positive values; non-positive points are ignored for log regression/plot domains.
+                </div>
+              ) : null}
             </div>
 
             {quickStats ? (
@@ -1126,7 +1244,7 @@ export default function RTMVsStocksDailyCard(props: {
                 <span className="font-medium">Show regression equation</span>
               </label>
               <div className="mt-1 text-[11px] text-slate-500">
-                When enabled, tooltip shows y = mx + b and R² for the hovered stock.
+                When enabled, tooltip shows equation and R² for the hovered stock (linear or log-log depending on Log scale toggle).
               </div>
             </div>
           </div>
@@ -1169,18 +1287,24 @@ export default function RTMVsStocksDailyCard(props: {
                           if (n == null) return "—";
                           return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n);
                         }}
-                        domain={[
-                          (dataMin: number) => {
-                            if (!Number.isFinite(dataMin)) return 0;
-                            const pad = Math.abs(dataMin) * 0.05;
-                            return dataMin - pad;
-                          },
-                          (dataMax: number) => {
-                            if (!Number.isFinite(dataMax)) return 0;
-                            const pad = Math.abs(dataMax) * 0.05;
-                            return dataMax + pad;
-                          }
-                        ]}
+                        // ✅ ADD: log support
+                        scale={useLogScale ? "log" : "linear"}
+                        domain={
+                          useLogScale
+                            ? [lineLogDomains.rtm.min, lineLogDomains.rtm.max]
+                            : [
+                                (dataMin: number) => {
+                                  if (!Number.isFinite(dataMin)) return 0;
+                                  const pad = Math.abs(dataMin) * 0.05;
+                                  return dataMin - pad;
+                                },
+                                (dataMax: number) => {
+                                  if (!Number.isFinite(dataMax)) return 0;
+                                  const pad = Math.abs(dataMax) * 0.05;
+                                  return dataMax + pad;
+                                }
+                              ]
+                        }
                       />
 
                       <YAxis
@@ -1190,18 +1314,24 @@ export default function RTMVsStocksDailyCard(props: {
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtNum(asFiniteNumber(v))}
-                        domain={[
-                          (dataMin: number) => {
-                            if (!Number.isFinite(dataMin)) return 0;
-                            const pad = Math.abs(dataMin) * 0.05;
-                            return dataMin - pad;
-                          },
-                          (dataMax: number) => {
-                            if (!Number.isFinite(dataMax)) return 0;
-                            const pad = Math.abs(dataMax) * 0.05;
-                            return dataMax + pad;
-                          }
-                        ]}
+                        // ✅ ADD: log support
+                        scale={useLogScale ? "log" : "linear"}
+                        domain={
+                          useLogScale
+                            ? [lineLogDomains.stock.min, lineLogDomains.stock.max]
+                            : [
+                                (dataMin: number) => {
+                                  if (!Number.isFinite(dataMin)) return 0;
+                                  const pad = Math.abs(dataMin) * 0.05;
+                                  return dataMin - pad;
+                                },
+                                (dataMax: number) => {
+                                  if (!Number.isFinite(dataMax)) return 0;
+                                  const pad = Math.abs(dataMax) * 0.05;
+                                  return dataMax + pad;
+                                }
+                              ]
+                        }
                       />
 
                       <Tooltip
@@ -1351,9 +1481,8 @@ export default function RTMVsStocksDailyCard(props: {
 
                 <div className="mt-2 text-[11px] text-slate-500">
                   Stocks are computed on chart date range ending at{" "}
-                  <span className="font-semibold">{range.toIso ? formatDDMMYYYY(range.toIso) : "—"}</span>. RTM is computed
-                  using a lagged anchor (To − {lagClamped}d) ending at{" "}
-                  <span className="font-semibold">{rtmAnchor ? formatDDMMYYYY(rtmAnchor) : "—"}</span>.
+                  <span className="font-semibold">{range.toIso ? formatDDMMYYYY(range.toIso) : "—"}</span>. RTM is computed using a lagged
+                  anchor (To − {lagClamped}d) ending at <span className="font-semibold">{rtmAnchor ? formatDDMMYYYY(rtmAnchor) : "—"}</span>.
                 </div>
               </>
             )}
@@ -1386,8 +1515,10 @@ export default function RTMVsStocksDailyCard(props: {
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
                         domain={scatterDomains.x}
+                        // ✅ ADD: log support
+                        scale={useLogScale ? "log" : "linear"}
                         label={{
-                          value: `RTM (rolling) ₹/unit${lagClamped ? ` (lag ${lagClamped}d)` : ""}`,
+                          value: `RTM (rolling) ₹/unit${lagClamped ? ` (lag ${lagClamped}d)` : ""}${useLogScale ? " (log)" : ""}`,
                           position: "insideBottom",
                           offset: -10,
                           fontSize: 12
@@ -1401,8 +1532,10 @@ export default function RTMVsStocksDailyCard(props: {
                         tick={{ fontSize: 12 }}
                         tickFormatter={(v) => fmtNum(asFiniteNumber(v))}
                         domain={scatterDomains.y}
+                        // ✅ ADD: log support
+                        scale={useLogScale ? "log" : "linear"}
                         label={{
-                          value: mode === "price" ? "Stock (rolling) Price" : "Stock (rolling) P/B",
+                          value: `${mode === "price" ? "Stock (rolling) Price" : "Stock (rolling) P/B"}${useLogScale ? " (log)" : ""}`,
                           angle: -90,
                           position: "insideLeft",
                           fontSize: 12
@@ -1439,11 +1572,32 @@ export default function RTMVsStocksDailyCard(props: {
                               {showScatterEqn && reg ? (
                                 <div className="mt-2 rounded-lg bg-slate-50 p-2 ring-1 ring-slate-200">
                                   <div className="text-slate-500">Regression</div>
-                                  <div className="font-semibold">{fmtEqn(reg.slope, reg.intercept)}</div>
-                                  <div className="mt-1">
-                                    <span className="text-slate-500">R²:</span>{" "}
-                                    <span className="font-semibold">{fmtR2(reg.r2)}</span>
-                                  </div>
+
+                                  {!useLogScale ? (
+                                    <>
+                                      <div className="font-semibold">{fmtEqn(reg.slope, reg.intercept)}</div>
+                                      <div className="mt-1">
+                                        <span className="text-slate-500">R²:</span>{" "}
+                                        <span className="font-semibold">{fmtR2(reg.r2)}</span>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {(() => {
+                                        const eq = fmtLogEqn(reg.slope, reg.intercept);
+                                        return (
+                                          <>
+                                            <div className="font-semibold">{eq.lnForm}</div>
+                                            <div className="mt-1 font-semibold">{eq.powForm}</div>
+                                            <div className="mt-1">
+                                              <span className="text-slate-500">R² (log-log):</span>{" "}
+                                              <span className="font-semibold">{fmtR2(reg.r2)}</span>
+                                            </div>
+                                          </>
+                                        );
+                                      })()}
+                                    </>
+                                  )}
                                 </div>
                               ) : null}
                             </div>
@@ -1463,22 +1617,40 @@ export default function RTMVsStocksDailyCard(props: {
                         }}
                       />
 
-                      {/* ✅ Trend lines per stock (dashed) */}
+                      {/* ✅ Trend lines per stock (dashed). For log: curve points will be drawn as a dashed line. */}
                       {selectedStocks.map((s, i) => {
                         const reg = regressionByStock[s];
                         if (!reg || !reg.line?.length) return null;
 
-                        const p1 = reg.line[0];
-                        const p2 = reg.line[1];
+                        // If linear mode, reg.line has 2 points; we can use ReferenceLine segment (keeps it clean).
+                        if (!useLogScale && reg.line.length >= 2) {
+                          const p1 = reg.line[0];
+                          const p2 = reg.line[1];
+                          return (
+                            <ReferenceLine
+                              key={`ref-tl-${s}`}
+                              segment={[{ x: p1.x, y: p1.y }, { x: p2.x, y: p2.y }]}
+                              stroke={getStockColor(i)}
+                              strokeWidth={2}
+                              strokeDasharray="6 6"
+                              ifOverflow="extendDomain"
+                            />
+                          );
+                        }
 
+                        // If log mode, reg.line is a curve (many points) => plot as Line
                         return (
-                          <ReferenceLine
-                            key={`ref-tl-${s}`}
-                            segment={[{ x: p1.x, y: p1.y }, { x: p2.x, y: p2.y }]}
-                            stroke={getStockColor(i)}
+                          <Line
+                            key={`log-tl-${s}`}
+                            type="linear"
+                            data={reg.line}
+                            dataKey="y"
+                            dot={false}
                             strokeWidth={2}
-                            strokeDasharray="6 6"   // ✅ dashed trendline
-                            ifOverflow="extendDomain"
+                            stroke={getStockColor(i)}
+                            strokeDasharray="6 6"
+                            legendType="none"
+                            isAnimationActive={false}
                           />
                         );
                       })}
@@ -1487,32 +1659,13 @@ export default function RTMVsStocksDailyCard(props: {
                       {selectedStocks.map((s, i) => (
                         <Scatter key={`sc-${s}`} name={s} data={scatterByStock[s] || []} fill={getStockColor(i)} />
                       ))}
-
-                      {/* (kept) Old Line trend attempt - harmless, but ReferenceLine above is the real trendline */}
-                      {selectedStocks.map((s, i) => {
-                        const reg = regressionByStock[s];
-                        if (!reg || !reg.line?.length) return null;
-                        return (
-                          <Line
-                            key={`tl-${s}`}
-                            type="linear"
-                            data={reg.line}
-                            dataKey="y"
-                            dot={false}
-                            strokeWidth={2}
-                            stroke={getStockColor(i)}
-                            legendType="none"
-                            isAnimationActive={false}
-                          />
-                        );
-                      })}
                     </ScatterChart>
                   </ResponsiveContainer>
                 </div>
 
                 <div className="mt-2 text-[11px] text-slate-500">
-                  Each dot is one date in the selected range. X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling (
-                  {mode === "price" ? "Price" : "P/B"}). Trend lines are linear best-fit lines; legend shows R².
+                  Each dot is one date in the selected range. X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling ({mode === "price" ? "Price" : "P/B"}).
+                  Trend lines are best-fit (linear or log-log depending on Log scale); legend shows R².
                 </div>
               </>
             )}
