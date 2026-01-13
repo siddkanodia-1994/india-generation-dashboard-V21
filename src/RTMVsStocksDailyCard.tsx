@@ -229,9 +229,9 @@ function corrColorClass(r: number | null) {
 }
 
 // ✅ formatter: linear shows % like before, log shows raw r (0.68)
-function fmtCorrDisplay(r: number | null, useLog: boolean) {
+function fmtCorrDisplay(r: number | null) {
   if (r == null || Number.isNaN(r)) return "—";
-  return useLog ? r.toFixed(2) : `${(r * 100).toFixed(2)}%`;
+  return `${(r * 100).toFixed(2)}%`;
 }
 
 /* -----------------------------
