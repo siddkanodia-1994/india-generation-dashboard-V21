@@ -212,6 +212,29 @@ function parseRtmCsv(text: string, valueColumnKey: string) {
 }
 
 /* -----------------------------
+   ✅ ADD: Log helpers (safe)
+----------------------------- */
+
+function log10Safe(v: number | null) {
+  if (v == null) return null;
+  if (!Number.isFinite(v) || v <= 0) return null;
+  return Math.log10(v);
+}
+
+// ✅ Color for correlation display
+function corrColorClass(r: number | null) {
+  if (r == null || !Number.isFinite(r)) return "text-slate-600";
+  if (Math.abs(r) < 0.1) return "text-slate-600";
+  return r > 0 ? "text-emerald-700" : "text-rose-700";
+}
+
+// ✅ formatter: linear shows % like before, log shows raw r (0.68)
+function fmtCorrDisplay(r: number | null, useLog: boolean) {
+  if (r == null || Number.isNaN(r)) return "—";
+  return useLog ? r.toFixed(2) : `${(r * 100).toFixed(2)}%`;
+}
+
+/* -----------------------------
    ✅ ADD: Pearson correlation helper (Excel CORREL)
 ----------------------------- */
 
@@ -335,7 +358,12 @@ async function loadStockXlsx(url: string): Promise<StockSheets> {
 
   function parseSheet(sheetName: string | undefined) {
     if (!sheetName) {
-      return { dates: [] as string[], cols: [] as string[], values: new Map(), latestDate: null as string | null };
+      return {
+        dates: [] as string[],
+        cols: [] as string[],
+        values: new Map(),
+        latestDate: null as string | null
+      };
     }
 
     const ws = wb.Sheets[sheetName];
@@ -440,16 +468,7 @@ function Card({
 }
 
 // Different colors for multiple stocks
-const STOCK_COLORS = [
-  "#2563eb",
-  "#9333ea",
-  "#0f766e",
-  "#f59e0b",
-  "#ef4444",
-  "#16a34a",
-  "#db2777",
-  "#475569"
-];
+const STOCK_COLORS = ["#2563eb", "#9333ea", "#0f766e", "#f59e0b", "#ef4444", "#16a34a", "#db2777", "#475569"];
 function getStockColor(i: number) {
   return STOCK_COLORS[i % STOCK_COLORS.length];
 }
@@ -472,6 +491,9 @@ export default function RTMVsStocksDailyCard(props: {
   const [windowDays, setWindowDays] = useState<WindowDays>(45);
   const [showYoY, setShowYoY] = useState(false);
   const [showRtmControlLines, setShowRtmControlLines] = useState(false);
+
+  // ✅ NEW: One toggle for log-log view + correlation
+  const [useLogScale, setUseLogScale] = useState<boolean>(false);
 
   // Lag control (days) – RTM only
   const [lagDays, setLagDays] = useState<number>(0);
@@ -563,9 +585,7 @@ export default function RTMVsStocksDailyCard(props: {
 
     // from must be <= to
     const safeFrom =
-      fromIso && /^\d{4}-\d{2}-\d{2}$/.test(fromIso) && fromIso <= safeTo
-        ? fromIso
-        : isoMinusMonths(anchorDate, 24);
+      fromIso && /^\d{4}-\d{2}-\d{2}$/.test(fromIso) && fromIso <= safeTo ? fromIso : isoMinusMonths(anchorDate, 24);
 
     return { fromIso: safeFrom, toIso: safeTo };
   }, [anchorDate, fromIso, toIso]);
@@ -589,19 +609,26 @@ export default function RTMVsStocksDailyCard(props: {
 
     while (cur <= range.toIso) {
       const rtmDate = lag ? isoMinusDays(cur, lag) : cur;
-      const rtm = rollingAvgRtm(rtmMap, rtmDate, windowDays);
+
+      const rtmLinear = rollingAvgRtm(rtmMap, rtmDate, windowDays);
+      const rtm = useLogScale ? log10Safe(rtmLinear) : rtmLinear;
 
       const row: any = {
         label: formatDDMMYYYY(cur),
         __iso: cur,
         rtm,
-        __rtmIso: rtmDate
+        __rtmIso: rtmDate,
+        __rtmLinear: rtmLinear
       };
 
       for (const s of selectedStocks) {
         const series = activeSheet.values.get(s);
         if (!series) continue;
-        row[s] = rollingAvgStocks(series, cur, windowDays);
+
+        const vLinear = rollingAvgStocks(series, cur, windowDays);
+        row[s] = useLogScale ? log10Safe(vLinear) : vLinear;
+
+        row[`__${s}_linear`] = vLinear;
       }
 
       if (showYoY) {
@@ -609,12 +636,12 @@ export default function RTMVsStocksDailyCard(props: {
         const rtmPYDate = lag ? isoMinusDays(py, lag) : py;
 
         const rtmPY = rollingAvgRtm(rtmMap, rtmPYDate, windowDays);
-        row.rtm_yoy = rtm != null && rtmPY != null ? growthPct(rtm, rtmPY) : null;
+        row.rtm_yoy = rtmLinear != null && rtmPY != null ? growthPct(rtmLinear, rtmPY) : null;
 
         for (const s of selectedStocks) {
           const series = activeSheet.values.get(s);
           if (!series) continue;
-          const v = row[s] as number | null;
+          const v = row[`__${s}_linear`] as number | null;
           const vPY = rollingAvgStocks(series, py, windowDays);
           row[`${s}_yoy`] = v != null && vPY != null ? growthPct(v, vPY) : null;
         }
@@ -625,7 +652,7 @@ export default function RTMVsStocksDailyCard(props: {
     }
 
     return points;
-  }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY, lagDays]);
+  }, [range, rtmMap, activeSheet, selectedStocks, windowDays, showYoY, lagDays, useLogScale]);
 
   // RTM control lines computed on visible RTM series (already lagged)
   const rtmControl = useMemo(() => {
@@ -635,7 +662,8 @@ export default function RTMVsStocksDailyCard(props: {
     if (!vals.length) return null;
 
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const variance = vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (vals.length - 1) : 0;
+    const variance =
+      vals.length > 1 ? vals.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (vals.length - 1) : 0;
     const sd = Math.sqrt(Math.max(0, variance));
 
     return { mean, sd, p1: mean + sd, p2: mean + 2 * sd, m1: mean - sd, m2: mean - 2 * sd };
@@ -692,12 +720,6 @@ export default function RTMVsStocksDailyCard(props: {
     if (x == null || Number.isNaN(x)) return "—";
     const sign = x > 0 ? "+" : "";
     return `${sign}${x.toFixed(2)}%`;
-  };
-
-  // ✅ CORREL formatter as %
-  const fmtCorr = (x: number | null | undefined) => {
-    if (x == null || Number.isNaN(x)) return "—";
-    return `${(x * 100).toFixed(2)}%`;
   };
 
   // ✅ R² formatter
@@ -964,6 +986,17 @@ export default function RTMVsStocksDailyCard(props: {
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-4">
+              {/* ✅ NEW: Log scale toggle (ONLY ONE toggle added) */}
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={useLogScale}
+                  onChange={(e) => setUseLogScale(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                <span className="font-medium">Use Log Scale (both axes) + Recalculate Correlation</span>
+              </label>
+
               <label className="flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
@@ -1004,20 +1037,31 @@ export default function RTMVsStocksDailyCard(props: {
 
                   <div className="text-sm text-slate-700">
                     <span className="text-slate-500">RTM (rolling):</span>{" "}
-                    <span className="font-semibold">{fmtRtm(quickStats.rtm)}</span>
+                    <span className="font-semibold">
+                      {useLogScale ? (quickStats.rtm != null ? quickStats.rtm.toFixed(3) : "—") : fmtRtm(quickStats.rtm)}
+                    </span>
 
-                    {/* ✅ CORREL label only + % values for each selected stock */}
                     {selectedStocks.length ? (
                       <div className="mt-1">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-slate-500">CORREL</span>
-                          <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr?.[selectedStocks[0]])}</span>
+                          <span className="text-slate-500">
+                            {useLogScale ? "Log-Log Correlation (RTM vs Stock)" : "CORREL"}
+                          </span>
+                          <span
+                            className={`font-semibold tabular-nums ${corrColorClass(
+                              quickStats.corr?.[selectedStocks[0]] ?? null
+                            )}`}
+                          >
+                            {fmtCorrDisplay(quickStats.corr?.[selectedStocks[0]] ?? null, useLogScale)}
+                          </span>
                         </div>
 
                         {selectedStocks.slice(1).map((s) => (
                           <div key={`${s}-corr`} className="mt-1 flex items-center justify-between gap-2">
                             <span className="truncate text-slate-500">{s}</span>
-                            <span className="font-semibold tabular-nums">{fmtCorr(quickStats.corr?.[s])}</span>
+                            <span className={`font-semibold tabular-nums ${corrColorClass(quickStats.corr?.[s] ?? null)}`}>
+                              {fmtCorrDisplay(quickStats.corr?.[s] ?? null, useLogScale)}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -1036,10 +1080,15 @@ export default function RTMVsStocksDailyCard(props: {
                       {selectedStocks.map((s) => (
                         <div key={s} className="flex items-center justify-between gap-2">
                           <span className="truncate">{s}</span>
-                          <span className="font-semibold tabular-nums">{fmtNum(quickStats.stocks[s])}</span>
+                          <span className="font-semibold tabular-nums">
+                            {useLogScale
+                              ? (quickStats.stocks[s] != null ? (quickStats.stocks[s] as number).toFixed(3) : "—")
+                              : fmtNum(quickStats.stocks[s])}
+                          </span>
                         </div>
                       ))}
                     </div>
+
                     {showYoY ? (
                       <div className="mt-2 space-y-1 text-[11px] text-slate-500">
                         {selectedStocks.map((s) => (
@@ -1167,7 +1216,11 @@ export default function RTMVsStocksDailyCard(props: {
                         tickFormatter={(v) => {
                           const n = asFiniteNumber(v);
                           if (n == null) return "—";
-                          return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n);
+                          if (useLogScale) return n.toFixed(3);
+                          return new Intl.NumberFormat("en-IN", {
+                            maximumFractionDigits: 2,
+                            minimumFractionDigits: 2
+                          }).format(n);
                         }}
                         domain={[
                           (dataMin: number) => {
@@ -1189,7 +1242,11 @@ export default function RTMVsStocksDailyCard(props: {
                         width={92}
                         tickMargin={10}
                         tick={{ fontSize: 12 }}
-                        tickFormatter={(v) => fmtNum(asFiniteNumber(v))}
+                        tickFormatter={(v) => {
+                          const n = asFiniteNumber(v);
+                          if (n == null) return "—";
+                          return useLogScale ? n.toFixed(3) : fmtNum(n);
+                        }}
                         domain={[
                           (dataMin: number) => {
                             if (!Number.isFinite(dataMin)) return 0;
@@ -1210,7 +1267,15 @@ export default function RTMVsStocksDailyCard(props: {
                           const key = (item && (item.dataKey as string)) || (name as string);
                           const num = asFiniteNumber(v);
 
-                          if (key === "rtm") return [`${fmtRtm(num)} Rs/Unit`, `RTM (rolling avg, lag ${lagClamped}d)`];
+                          if (key === "rtm") {
+                            return [
+                              useLogScale ? `${(num ?? NaN).toFixed(3)} (log10)` : `${fmtRtm(num)} Rs/Unit`,
+                              useLogScale
+                                ? `RTM (log10 rolling, lag ${lagClamped}d)`
+                                : `RTM (rolling avg, lag ${lagClamped}d)`
+                            ];
+                          }
+
                           if (key === "rtm_yoy") return [fmtPct(num), "RTM YoY %"];
 
                           if (key.endsWith("_yoy")) {
@@ -1219,7 +1284,16 @@ export default function RTMVsStocksDailyCard(props: {
                           }
 
                           if (selectedStocks.includes(key)) {
-                            return [fmtNum(num), mode === "price" ? `${key} (Price)` : `${key} (P/B)`];
+                            return [
+                              useLogScale ? `${(num ?? NaN).toFixed(3)} (log10)` : fmtNum(num),
+                              useLogScale
+                                ? mode === "price"
+                                  ? `${key} (log10 Price)`
+                                  : `${key} (log10 P/B)`
+                                : mode === "price"
+                                  ? `${key} (Price)`
+                                  : `${key} (P/B)`
+                            ];
                           }
 
                           return [v, String(name)];
@@ -1239,7 +1313,7 @@ export default function RTMVsStocksDailyCard(props: {
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
-                              value: `Mean (${fmtRtm(rtmControl.mean)})`,
+                              value: `Mean (${useLogScale ? rtmControl.mean.toFixed(3) : fmtRtm(rtmControl.mean)})`,
                               position: "insideTopLeft",
                               fontSize: 11,
                               fill: "#000000"
@@ -1254,7 +1328,7 @@ export default function RTMVsStocksDailyCard(props: {
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
-                              value: `+1σ (${fmtRtm(rtmControl.p1)})`,
+                              value: `+1σ (${useLogScale ? rtmControl.p1.toFixed(3) : fmtRtm(rtmControl.p1)})`,
                               position: "insideTopLeft",
                               fontSize: 11,
                               fill: "#f97316"
@@ -1269,7 +1343,7 @@ export default function RTMVsStocksDailyCard(props: {
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
-                              value: `+2σ (${fmtRtm(rtmControl.p2)})`,
+                              value: `+2σ (${useLogScale ? rtmControl.p2.toFixed(3) : fmtRtm(rtmControl.p2)})`,
                               position: "insideTopLeft",
                               fontSize: 11,
                               fill: "#16a34a"
@@ -1284,7 +1358,7 @@ export default function RTMVsStocksDailyCard(props: {
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
-                              value: `-1σ (${fmtRtm(rtmControl.m1)})`,
+                              value: `-1σ (${useLogScale ? rtmControl.m1.toFixed(3) : fmtRtm(rtmControl.m1)})`,
                               position: "insideBottomLeft",
                               fontSize: 11,
                               fill: "#b45309"
@@ -1299,7 +1373,7 @@ export default function RTMVsStocksDailyCard(props: {
                             strokeDasharray={CONTROL_DASH}
                             ifOverflow="extendDomain"
                             label={{
-                              value: `-2σ (${fmtRtm(rtmControl.m2)})`,
+                              value: `-2σ (${useLogScale ? rtmControl.m2.toFixed(3) : fmtRtm(rtmControl.m2)})`,
                               position: "insideBottomLeft",
                               fontSize: 11,
                               fill: "#7c3aed"
@@ -1312,7 +1386,7 @@ export default function RTMVsStocksDailyCard(props: {
                         yAxisId="left"
                         type="monotone"
                         dataKey="rtm"
-                        name={`RTM (Rs/Unit)${lagClamped ? ` (lag ${lagClamped}d)` : ""}`}
+                        name={`RTM${useLogScale ? " (log10)" : " (Rs/Unit)"}${lagClamped ? ` (lag ${lagClamped}d)` : ""}`}
                         dot={false}
                         strokeWidth={2}
                         stroke="#dc2626"
@@ -1325,7 +1399,15 @@ export default function RTMVsStocksDailyCard(props: {
                           yAxisId="right"
                           type="monotone"
                           dataKey={s}
-                          name={mode === "price" ? `${s} (Price)` : `${s} (P/B)`}
+                          name={
+                            useLogScale
+                              ? mode === "price"
+                                ? `${s} (log10 Price)`
+                                : `${s} (log10 P/B)`
+                              : mode === "price"
+                                ? `${s} (Price)`
+                                : `${s} (P/B)`
+                          }
                           dot={false}
                           strokeWidth={2}
                           stroke={getStockColor(i)}
@@ -1384,10 +1466,16 @@ export default function RTMVsStocksDailyCard(props: {
                         dataKey="x"
                         name="RTM (rolling)"
                         tick={{ fontSize: 12 }}
-                        tickFormatter={(v) => fmtRtm(asFiniteNumber(v))}
+                        tickFormatter={(v) => {
+                          const n = asFiniteNumber(v);
+                          if (n == null) return "—";
+                          return useLogScale ? n.toFixed(3) : fmtRtm(n);
+                        }}
                         domain={scatterDomains.x}
                         label={{
-                          value: `RTM (rolling) ₹/unit${lagClamped ? ` (lag ${lagClamped}d)` : ""}`,
+                          value: useLogScale
+                            ? `RTM (log10 rolling)${lagClamped ? ` (lag ${lagClamped}d)` : ""}`
+                            : `RTM (rolling) ₹/unit${lagClamped ? ` (lag ${lagClamped}d)` : ""}`,
                           position: "insideBottom",
                           offset: -10,
                           fontSize: 12
@@ -1399,10 +1487,20 @@ export default function RTMVsStocksDailyCard(props: {
                         dataKey="y"
                         name="Stock (rolling)"
                         tick={{ fontSize: 12 }}
-                        tickFormatter={(v) => fmtNum(asFiniteNumber(v))}
+                        tickFormatter={(v) => {
+                          const n = asFiniteNumber(v);
+                          if (n == null) return "—";
+                          return useLogScale ? n.toFixed(3) : fmtNum(n);
+                        }}
                         domain={scatterDomains.y}
                         label={{
-                          value: mode === "price" ? "Stock (rolling) Price" : "Stock (rolling) P/B",
+                          value: useLogScale
+                            ? mode === "price"
+                              ? "Stock (log10 rolling) Price"
+                              : "Stock (log10 rolling) P/B"
+                            : mode === "price"
+                              ? "Stock (rolling) Price"
+                              : "Stock (rolling) P/B",
                           angle: -90,
                           position: "insideLeft",
                           fontSize: 12
@@ -1429,11 +1527,15 @@ export default function RTMVsStocksDailyCard(props: {
                               </div>
                               <div className="mt-1">
                                 <span className="text-slate-500">RTM (X):</span>{" "}
-                                <span className="font-semibold">{fmtRtm(asFiniteNumber(p?.x))}</span>
+                                <span className="font-semibold">
+                                  {useLogScale ? (asFiniteNumber(p?.x) ?? NaN).toFixed(3) : fmtRtm(asFiniteNumber(p?.x))}
+                                </span>
                               </div>
                               <div className="mt-1">
                                 <span className="text-slate-500">{stockName || "Stock"} (Y):</span>{" "}
-                                <span className="font-semibold">{fmtNum(asFiniteNumber(p?.y))}</span>
+                                <span className="font-semibold">
+                                  {useLogScale ? (asFiniteNumber(p?.y) ?? NaN).toFixed(3) : fmtNum(asFiniteNumber(p?.y))}
+                                </span>
                               </div>
 
                               {showScatterEqn && reg ? (
@@ -1474,10 +1576,13 @@ export default function RTMVsStocksDailyCard(props: {
                         return (
                           <ReferenceLine
                             key={`ref-tl-${s}`}
-                            segment={[{ x: p1.x, y: p1.y }, { x: p2.x, y: p2.y }]}
+                            segment={[
+                              { x: p1.x, y: p1.y },
+                              { x: p2.x, y: p2.y }
+                            ]}
                             stroke={getStockColor(i)}
                             strokeWidth={2}
-                            strokeDasharray="6 6"   // ✅ dashed trendline
+                            strokeDasharray="6 6" // ✅ dashed trendline
                             ifOverflow="extendDomain"
                           />
                         );
@@ -1511,8 +1616,18 @@ export default function RTMVsStocksDailyCard(props: {
                 </div>
 
                 <div className="mt-2 text-[11px] text-slate-500">
-                  Each dot is one date in the selected range. X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling (
-                  {mode === "price" ? "Price" : "P/B"}). Trend lines are linear best-fit lines; legend shows R².
+                  Each dot is one date in the selected range.{" "}
+                  {useLogScale ? (
+                    <>
+                      X = log10(RTM rolling, lagged by {lagClamped}d). Y = log10(stock rolling{" "}
+                      {mode === "price" ? "Price" : "P/B"}).
+                    </>
+                  ) : (
+                    <>
+                      X = RTM rolling (lagged by {lagClamped}d). Y = stock rolling ({mode === "price" ? "Price" : "P/B"}).
+                    </>
+                  )}{" "}
+                  Trend lines are linear best-fit lines; legend shows R².
                 </div>
               </>
             )}
